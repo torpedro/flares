@@ -139,6 +139,32 @@ pub struct MutationResult {
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Alert {
+    #[schema(min_length = 1, max_length = 250)]
+    pub title: String,
+    #[schema(min_length = 1, max_length = 1024)]
+    pub message: String,
+}
+
+impl Alert {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.title.is_empty() || self.title.chars().count() > 250 {
+            return Err("title must contain between 1 and 250 characters");
+        }
+        if self.message.is_empty() || self.message.chars().count() > 1024 {
+            return Err("message must contain between 1 and 1024 characters");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct AlertResult {
+    pub notification: Notification,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct IssueList {
     pub items: Vec<Issue>,
     pub total: u64,

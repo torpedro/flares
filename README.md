@@ -64,6 +64,7 @@ All `/v1` operations require `Authorization: Bearer <api_token>`. Bodies and res
 
 | Method | Endpoint | Input / behavior |
 | --- | --- | --- |
+| POST | `/v1/alerts` | `{"title":"Backup complete","message":"All files copied."}`; sends a one-shot notification. |
 | POST | `/v1/issues/open` | `{"id":"disk-space","title":"Optional title","message":"Optional message"}` |
 | POST | `/v1/issues/close` | `{"id":"disk-space"}` |
 | GET | `/v1/issues/{id}` | Fetch an issue by URL-encoded ID. |
@@ -112,6 +113,21 @@ curl --fail-with-body http://127.0.0.1:8000/v1/issues/close \
   -H 'Content-Type: application/json' \
   -d '{"id":"disk-space"}'
 ```
+
+## One-shot alerts
+
+Send `POST /v1/alerts` to trigger a notification without creating or updating an issue. Both `title` (1–250 Unicode characters) and `message` (1–1024) are required. Empty/null values and unknown fields are rejected. Alerts have no ID, stored history, or close operation.
+
+```sh
+curl --fail-with-body http://127.0.0.1:8000/v1/alerts \
+  -H "Authorization: Bearer $FLARE_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Backup complete","message":"All files copied."}'
+```
+
+The response is HTTP 200 with `{"notification":{"status":"sent","error":null}}` when Pushover accepts the notification. A delivery failure returns HTTP 200 with `status: "failed"` and a sanitized `error`; disabled notifications return `status: "not_attempted"` and `error: null`.
+
+Each valid request makes one attempt when notifications are configured, including repeated identical requests. The existing Pushover timeout and concurrency limits apply, with no automatic retries. Once started, the attempt continues if the client disconnects while the server process remains running. A timeout or lost response can leave delivery uncertain; retrying can send another notification. Alerts are not persisted or replayed after restart.
 
 ## Notification semantics
 

@@ -102,6 +102,7 @@ pub fn router(store: Store, notifier: Option<Arc<dyn Notifier>>, token: Secret) 
         token,
     };
     let protected = Router::new()
+        .route("/v1/alerts", post(send_alert))
         .route("/v1/issues/open", post(open_issue))
         .route("/v1/issues/close", post(close_issue))
         .route("/v1/issues", get(list_issues))
@@ -117,6 +118,33 @@ pub fn router(store: Store, notifier: Option<Arc<dyn Notifier>>, token: Secret) 
         .route("/openapi.json", get(|| async { Json(ApiDoc::openapi()) }))
         .fallback(|| async { ApiError(StatusCode::NOT_FOUND, "Endpoint not found") })
         .layer(DefaultBodyLimit::max(32 * 1024))
+}
+
+/// Send a one-shot notification without creating or updating an issue.
+#[utoipa::path(post, path = "/v1/alerts", request_body = Alert,
+    responses((status = 200, body = AlertResult), (status = 401, body = ErrorBody), (status = 422, body = ErrorBody)),
+    security(("bearer_token" = [])))]
+async fn send_alert(
+    State(state): State<AppState>,
+    body: Result<Json<Alert>, JsonRejection>,
+) -> Result<Json<AlertResult>, ApiError> {
+    let request = json_body(body)?;
+    request.validate().map_err(invalid)?;
+    // Keep the attempt running if the HTTP client disconnects.
+    let notification = tokio::spawn(async move {
+        match state.notifier {
+            Some(notifier) => notifier.send(&request.title, &request.message).await,
+            None => Notification::not_attempted(),
+        }
+    })
+    .await
+    .map_err(|_| {
+        ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Alert interrupted; notification delivery is uncertain",
+        )
+    })?;
+    Ok(Json(AlertResult { notification }))
 }
 
 #[utoipa::path(post, path = "/v1/issues/open", request_body = OpenIssue,
@@ -226,8 +254,8 @@ async fn list_issues(
 
 #[derive(OpenApi)]
 #[openapi(info(title = "Flare", version = "0.1.0"),
-    paths(open_issue, close_issue, get_issue, lookup_issue, list_issues),
-    components(schemas(OpenIssue, CloseIssue, Issue, IssueList, MutationResult, Notification, NotificationStatus, IssueStatus, ErrorBody)),
+    paths(send_alert, open_issue, close_issue, get_issue, lookup_issue, list_issues),
+    components(schemas(Alert, AlertResult, OpenIssue, CloseIssue, Issue, IssueList, MutationResult, Notification, NotificationStatus, IssueStatus, ErrorBody)),
     modifiers(&Security))]
 pub struct ApiDoc;
 

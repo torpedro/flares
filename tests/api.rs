@@ -1,5 +1,5 @@
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -18,10 +18,15 @@ use tower::ServiceExt;
 struct CountingNotifier {
     calls: AtomicUsize,
     fail: bool,
+    messages: Mutex<Vec<(String, String)>>,
 }
 #[async_trait]
 impl Notifier for CountingNotifier {
-    async fn send(&self, _title: &str, _message: &str) -> Notification {
+    async fn send(&self, title: &str, message: &str) -> Notification {
+        self.messages
+            .lock()
+            .unwrap()
+            .push((title.into(), message.into()));
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.fail {
             Notification::failed("Provider unavailable")
@@ -44,6 +49,7 @@ impl Harness {
         let notifier = Arc::new(CountingNotifier {
             calls: AtomicUsize::new(0),
             fail,
+            messages: Mutex::new(Vec::new()),
         });
         let app = api::router(
             store.clone(),
@@ -91,6 +97,182 @@ async fn call(app: &Router, method: &str, path: &str, body: Option<Value>) -> Va
     let (status, body) = request(app, method, path, body, Some("Bearer test-token")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     body
+}
+
+#[tokio::test]
+async fn alerts_send_every_time_without_creating_or_changing_issues() {
+    for fail in [false, true] {
+        let h = Harness::new(fail);
+        let issue = call(
+            &h.app,
+            "POST",
+            "/v1/issues/open",
+            Some(json!({"id":"backup"})),
+        )
+        .await;
+        for _ in 0..2 {
+            let result = call(
+                &h.app,
+                "POST",
+                "/v1/alerts",
+                Some(json!({
+                    "title":"backup", "message":"Backup completed 🦀"
+                })),
+            )
+            .await;
+            let expected = if fail {
+                Notification::failed("Provider unavailable")
+            } else {
+                Notification::sent()
+            };
+            assert_eq!(result, json!({"notification":expected}));
+        }
+        assert_eq!(h.notifier.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            &h.notifier.messages.lock().unwrap()[1..],
+            &[
+                ("backup".into(), "Backup completed 🦀".into()),
+                ("backup".into(), "Backup completed 🦀".into()),
+            ]
+        );
+        assert_eq!(call(&h.app, "GET", "/v1/issues", None).await["total"], 1);
+        assert_eq!(
+            call(&h.app, "GET", "/v1/issues/backup", None).await,
+            issue["issue"]
+        );
+        assert_eq!(
+            request(
+                &h.app,
+                "POST",
+                "/v1/alerts/close",
+                Some(json!({"title":"backup"})),
+                Some("Bearer test-token")
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+}
+
+#[tokio::test]
+async fn alerts_validate_content_before_sending() {
+    let h = Harness::new(false);
+    for body in [
+        json!({}),
+        json!({"title":"Alert"}),
+        json!({"message":"Hello"}),
+        json!({"title":null,"message":"Hello"}),
+        json!({"title":"Alert","message":42}),
+        json!({"title":"Alert","message":"Hello","id":"x"}),
+        json!({"title":"","message":"Hello"}),
+        json!({"title":"🦀".repeat(251),"message":"Hello"}),
+        json!({"title":"Alert","message":""}),
+        json!({"title":"Alert","message":"🦀".repeat(1025)}),
+    ] {
+        assert_eq!(
+            request(
+                &h.app,
+                "POST",
+                "/v1/alerts",
+                Some(body),
+                Some("Bearer test-token")
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    assert_eq!(h.notifier.calls.load(Ordering::SeqCst), 0);
+    call(
+        &h.app,
+        "POST",
+        "/v1/alerts",
+        Some(json!({"title":"🦀".repeat(250),"message":"🦀".repeat(1024)})),
+    )
+    .await;
+    assert_eq!(h.notifier.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(call(&h.app, "GET", "/v1/issues", None).await["total"], 0);
+}
+
+#[tokio::test]
+async fn alerts_without_a_notifier_report_not_attempted() {
+    let h = Harness::new(false);
+    let app = api::router(
+        h.store.clone(),
+        None,
+        serde_json::from_value(json!("test-token")).unwrap(),
+    );
+    let result = call(
+        &app,
+        "POST",
+        "/v1/alerts",
+        Some(json!({"title":"Alert","message":"Hello"})),
+    )
+    .await;
+    assert_eq!(
+        result,
+        json!({"notification":{"status":"not_attempted","error":null}})
+    );
+    assert_eq!(call(&app, "GET", "/v1/issues", None).await["total"], 0);
+}
+
+#[tokio::test]
+async fn cancelled_alert_request_does_not_cancel_notification() {
+    struct BlockingNotifier {
+        started: Semaphore,
+        release: Semaphore,
+        completed: Semaphore,
+    }
+    #[async_trait]
+    impl Notifier for BlockingNotifier {
+        async fn send(&self, _title: &str, _message: &str) -> Notification {
+            self.started.add_permits(1);
+            self.release.acquire().await.unwrap().forget();
+            self.completed.add_permits(1);
+            Notification::sent()
+        }
+    }
+    let h = Harness::new(false);
+    let notifier = Arc::new(BlockingNotifier {
+        started: Semaphore::new(0),
+        release: Semaphore::new(0),
+        completed: Semaphore::new(0),
+    });
+    let app = api::router(
+        h.store.clone(),
+        Some(notifier.clone()),
+        serde_json::from_value(json!("test-token")).unwrap(),
+    );
+    let pending = tokio::spawn(async move {
+        call(
+            &app,
+            "POST",
+            "/v1/alerts",
+            Some(json!({"title":"Alert","message":"Hello"})),
+        )
+        .await
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        notifier.started.acquire(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .forget();
+    pending.abort();
+    assert!(pending.await.unwrap_err().is_cancelled());
+    notifier.release.add_permits(1);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        notifier.completed.acquire(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .forget();
+    assert_eq!(call(&h.app, "GET", "/v1/issues", None).await["total"], 0);
 }
 
 #[tokio::test]
@@ -192,6 +374,11 @@ async fn failed_notification_keeps_issue_open_and_is_not_retried() {
 async fn auth_validation_and_unknown_ids_do_not_mutate() {
     let h = Harness::new(false);
     for (method, path, body) in [
+        (
+            "POST",
+            "/v1/alerts",
+            Some(json!({"title":"Alert","message":"Hello"})),
+        ),
         ("POST", "/v1/issues/open", Some(json!({"id":"x"}))),
         ("POST", "/v1/issues/close", Some(json!({"id":"x"}))),
         ("GET", "/v1/issues/x", None),
@@ -542,6 +729,7 @@ async fn openapi_describes_authenticated_operations() {
         "bearer"
     );
     for (path, method) in [
+        ("/v1/alerts", "post"),
         ("/v1/issues/open", "post"),
         ("/v1/issues/close", "post"),
         ("/v1/issues/{id}", "get"),
