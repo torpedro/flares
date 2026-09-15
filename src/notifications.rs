@@ -4,11 +4,17 @@ use async_trait::async_trait;
 use reqwest::{Client, Url};
 use tokio::sync::Semaphore;
 
-use crate::{config::PushoverConfig, models::Notification};
+use crate::{
+    config::PushoverConfig,
+    models::{Delivery, Notification, Severity},
+};
 
 #[async_trait]
 pub trait Notifier: Send + Sync {
     async fn send(&self, title: &str, message: &str) -> Notification;
+    async fn send_delivery(&self, delivery: &Delivery) -> Notification {
+        self.send(&delivery.title, &delivery.message).await
+    }
 }
 
 pub struct Pushover {
@@ -34,7 +40,7 @@ impl Pushover {
         })
     }
 
-    async fn attempt(&self, title: &str, message: &str) -> Notification {
+    async fn attempt(&self, title: &str, message: &str, severity: Severity) -> Notification {
         let Ok(_permit) = self.permits.acquire().await else {
             return Notification::failed("Notification channel is unavailable.");
         };
@@ -43,7 +49,14 @@ impl Pushover {
             ("user", self.config.user_key.expose()),
             ("title", title),
             ("message", message),
-            ("priority", "0"),
+            (
+                "priority",
+                match severity {
+                    Severity::Info => "-1",
+                    Severity::Warning => "0",
+                    Severity::Critical => "1",
+                },
+            ),
         ];
         if let Some(device) = &self.config.device {
             form.push(("device", device));
@@ -77,9 +90,155 @@ impl Pushover {
 impl Notifier for Pushover {
     async fn send(&self, title: &str, message: &str) -> Notification {
         // The deadline also covers capacity waiting and reading the response body.
-        tokio::time::timeout(self.timeout, self.attempt(title, message))
+        tokio::time::timeout(
+            self.timeout,
+            self.attempt(title, message, Severity::Warning),
+        )
+        .await
+        .unwrap_or_else(|_| Notification::failed("Pushover timed out; delivery is uncertain."))
+    }
+    async fn send_delivery(&self, delivery: &Delivery) -> Notification {
+        tokio::time::timeout(
+            self.timeout,
+            self.attempt(&delivery.title, &delivery.message, delivery.severity),
+        )
+        .await
+        .unwrap_or_else(|_| Notification::failed("Pushover timed out; delivery is uncertain."))
+    }
+}
+
+pub struct Webhook {
+    url: crate::config::Secret,
+    bearer_token: Option<crate::config::Secret>,
+    client: Client,
+}
+impl Webhook {
+    pub fn new(
+        url: crate::config::Secret,
+        bearer_token: Option<crate::config::Secret>,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            url,
+            bearer_token,
+            client: Client::builder()
+                .timeout(Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
+                .build()?,
+        })
+    }
+    async fn post(&self, body: serde_json::Value, id: Option<i64>) -> Notification {
+        let mut request = self.client.post(self.url.expose()).json(&body);
+        if let Some(token) = &self.bearer_token {
+            request = request.bearer_auth(token.expose());
+        }
+        if let Some(id) = id {
+            request = request.header("Idempotency-Key", format!("flare-delivery-{id}"));
+        }
+        match request.send().await {
+            Ok(response) if response.status().is_success() => Notification::sent(),
+            Ok(_) => Notification::failed("Webhook rejected the notification."),
+            Err(_) => Notification::failed("Could not contact webhook; delivery is uncertain."),
+        }
+    }
+}
+#[async_trait]
+impl Notifier for Webhook {
+    async fn send(&self, title: &str, message: &str) -> Notification {
+        self.post(serde_json::json!({"title":title,"message":message}), None)
             .await
-            .unwrap_or_else(|_| Notification::failed("Pushover timed out; delivery is uncertain."))
+    }
+    async fn send_delivery(&self, delivery: &Delivery) -> Notification {
+        self.post(
+            serde_json::json!({"id":delivery.id,"title":delivery.title,"message":delivery.message,
+            "severity":delivery.severity,"kind":delivery.kind,"count":delivery.count}),
+            Some(delivery.id),
+        )
+        .await
+    }
+}
+
+#[cfg(test)]
+mod webhook_tests {
+    use super::*;
+    use axum::{
+        Json, Router,
+        http::{HeaderMap, StatusCode},
+        routing::post,
+    };
+    use serde_json::{Value, json};
+    use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn webhook_sends_metadata_and_stable_key_without_leaking_error_bodies() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let captured = seen.clone();
+        let app = Router::new()
+            .route(
+                "/hook",
+                post(move |headers: HeaderMap, Json(body): Json<Value>| {
+                    captured.lock().unwrap().push((headers, body));
+                    async { StatusCode::NO_CONTENT }
+                }),
+            )
+            .route(
+                "/fail",
+                post(|| async { (StatusCode::BAD_REQUEST, "secret-provider-body") }),
+            )
+            .route(
+                "/redirect",
+                post(|| async { (StatusCode::TEMPORARY_REDIRECT, [("location", "/hook")]) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let channel = Webhook::new(
+            serde_json::from_value(json!(format!("http://{address}/hook"))).unwrap(),
+            Some(serde_json::from_value(json!("secret-token")).unwrap()),
+        )
+        .unwrap();
+        let event = Delivery {
+            id: 42,
+            title: "Backup".into(),
+            message: "Done 🦀".into(),
+            severity: Severity::Critical,
+            kind: "alert".into(),
+            count: 1,
+            created_at: 0,
+            next_attempt_at: 0,
+            notification: Notification::not_attempted(),
+            destinations: vec![],
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                channel.send_delivery(&event).await.status,
+                crate::models::NotificationStatus::Sent
+            );
+        }
+        {
+            let requests = seen.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            for (headers, body) in requests.iter() {
+                assert_eq!(headers["authorization"], "Bearer secret-token");
+                assert_eq!(headers["idempotency-key"], "flare-delivery-42");
+                assert_eq!(
+                    *body,
+                    json!({"id":42,"title":"Backup","message":"Done 🦀","severity":"critical","kind":"alert","count":1})
+                );
+            }
+        }
+        for path in ["fail", "redirect"] {
+            let channel = Webhook::new(
+                serde_json::from_value(json!(format!("http://{address}/{path}"))).unwrap(),
+                None,
+            )
+            .unwrap();
+            let outcome = channel.send_delivery(&event).await;
+            assert_eq!(outcome.status, crate::models::NotificationStatus::Failed);
+            assert!(!outcome.error.unwrap().contains("secret"));
+        }
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        server.abort();
     }
 }
 

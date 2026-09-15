@@ -12,6 +12,8 @@ use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 pub enum StoreError {
     #[error("Issue not found")]
     NotFound,
+    #[error("Idempotency key was already used with a different request")]
+    Conflict,
     #[error("Issue storage is unavailable")]
     Sqlite(#[from] rusqlite::Error),
     #[error("Issue storage is unavailable")]
@@ -22,7 +24,9 @@ pub enum StoreError {
 pub struct Store(Arc<Mutex<Connection>>);
 
 const SELECT: &str = "SELECT i.id, i.status, i.title, i.message, i.created_at, i.updated_at,
-    i.opened_at, i.closed_at, i.opening_count, n.status, n.error
+    i.opened_at, i.closed_at, i.opening_count, n.status, n.error,
+    (SELECT payload FROM issue_policies WHERE issue_id=i.id),
+    (SELECT id FROM deliveries WHERE issue_id=i.id AND opening_count=i.opening_count LIMIT 1)
     FROM issues i JOIN notifications n ON n.issue_id = i.id AND n.opening_count = i.opening_count";
 
 const NOTIFICATIONS_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS notifications (
@@ -43,7 +47,23 @@ fn parse<T: serde::de::DeserializeOwned>(row: &Row<'_>, index: usize) -> rusqlit
 }
 
 fn issue(row: &Row<'_>) -> rusqlite::Result<Issue> {
+    let policy: OpenIssue = row
+        .get::<_, Option<String>>(11)?
+        .map(|s| serde_json::from_str(&s))
+        .transpose()
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                11,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?
+        .unwrap_or_default();
     Ok(Issue {
+        severity: policy.severity,
+        remind_every_seconds: policy.remind_every_seconds,
+        notify_on_resolution: policy.notify_on_resolution,
+        delivery_id: row.get(12)?,
         id: row.get(0)?,
         status: parse(row, 1)?,
         title: row.get(2)?,
@@ -71,7 +91,7 @@ fn get(db: &Connection, id: &str) -> Result<Issue, StoreError> {
 }
 
 impl Store {
-    /// Initialize once per service instance. A restart never retries unfinished notifications.
+    /// Initialize once per service instance and recover unfinished durable deliveries.
     pub fn open_file(path: &Path) -> anyhow::Result<Self> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)
@@ -114,16 +134,17 @@ impl Store {
         } else {
             tx.execute_batch(NOTIFICATIONS_SCHEMA)?;
         }
+        tx.execute_batch(crate::delivery::SCHEMA)?;
         tx.execute_batch(
             "UPDATE notifications SET status = 'unknown',
             error = 'Service stopped before the notification outcome was recorded; not retried.'
-            WHERE status = 'pending';",
+            WHERE status = 'pending' AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.issue_id=notifications.issue_id AND d.opening_count=notifications.opening_count);",
         )?;
         tx.commit()?;
         Ok(Self(Arc::new(Mutex::new(db))))
     }
 
-    async fn run<T, F>(&self, action: F) -> Result<T, StoreError>
+    pub(crate) async fn run<T, F>(&self, action: F) -> Result<T, StoreError>
     where
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T, StoreError> + Send + 'static,
@@ -142,15 +163,26 @@ impl Store {
         request: OpenIssue,
         notify: bool,
     ) -> Result<(Issue, bool), StoreError> {
+        let (issue, changed, _) = self.open_planned(request, notify, None).await?;
+        Ok((issue, changed))
+    }
+
+    pub async fn open_planned(
+        &self,
+        request: OpenIssue,
+        notify: bool,
+        plan: Option<crate::delivery::Plan>,
+    ) -> Result<(Issue, bool, Option<i64>), StoreError> {
         self.run(move |db| {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let policy = serde_json::to_string(&request).map_err(|_| StoreError::Unavailable)?;
             let previous = match get(&tx, &request.id) {
                 Ok(value) => Some(value),
                 Err(StoreError::NotFound) => None,
                 Err(e) => return Err(e),
             };
             if let Some(value) = previous.as_ref().filter(|i| i.status == IssueStatus::Open) {
-                return Ok((value.clone(), false));
+                return Ok((value.clone(), false, None));
             }
             let count = previous.as_ref().map_or(1, |i| i.opening_count + 1);
             let now = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
@@ -176,28 +208,74 @@ impl Store {
                 "INSERT INTO notifications(issue_id, opening_count, status) VALUES (?, ?, ?)",
                 params![request.id, count, status],
             )?;
+            tx.execute("INSERT INTO issue_policies(issue_id,payload,next_reminder) VALUES(?,?,?) ON CONFLICT(issue_id) DO UPDATE SET payload=excluded.payload,next_reminder=excluded.next_reminder",params![request.id,policy,request.remind_every_seconds.map(|seconds| Utc::now().timestamp()+seconds as i64)])?;
+            let delivery_id = if let Some(plan) = plan {
+                Some(crate::delivery::enqueue(&tx,&Alert {title,message,severity:request.severity,group_key:None},"issue_opened",&plan,Some((&request.id,count)))?.id)
+            } else {None};
             let value = get(&tx, &request.id)?;
             tx.commit()?;
-            Ok((value, true))
+            Ok((value, true, delivery_id))
         })
         .await
     }
 
     pub async fn close(&self, id: String) -> Result<(Issue, bool), StoreError> {
+        let (issue, changed, _) = self.close_planned(id, None).await?;
+        Ok((issue, changed))
+    }
+
+    pub async fn close_planned(
+        &self,
+        id: String,
+        service: Option<crate::delivery::DeliveryService>,
+    ) -> Result<(Issue, bool, Option<i64>), StoreError> {
         self.run(move |db| {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let previous = get(&tx, &id)?;
             if previous.status == IssueStatus::Closed {
-                return Ok((previous, false));
+                return Ok((previous, false, None));
             }
             let now = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
             tx.execute(
                 "UPDATE issues SET status='closed', updated_at=?1, closed_at=?1 WHERE id=?2",
                 params![now, id],
             )?;
+            let mut delivery_id = None;
+            let policy: Option<String> = tx
+                .query_row(
+                    "SELECT payload FROM issue_policies WHERE issue_id=?",
+                    [&id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let (Some(service), Some(policy)) = (service, policy) {
+                let policy: OpenIssue =
+                    serde_json::from_str(&policy).map_err(|_| StoreError::Unavailable)?;
+                if policy.notify_on_resolution {
+                    delivery_id = Some(
+                        crate::delivery::enqueue(
+                            &tx,
+                            &Alert {
+                                title: previous.title,
+                                message: format!("Issue {id} resolved."),
+                                severity: policy.severity,
+                                group_key: None,
+                            },
+                            "issue_resolved",
+                            &service.plan(policy.severity),
+                            None,
+                        )?
+                        .id,
+                    );
+                }
+            }
+            tx.execute(
+                "UPDATE issue_policies SET next_reminder=NULL WHERE issue_id=?",
+                [&id],
+            )?;
             let value = get(&tx, &id)?;
             tx.commit()?;
-            Ok((value, true))
+            Ok((value, true, delivery_id))
         })
         .await
     }

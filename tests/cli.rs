@@ -61,6 +61,135 @@ async fn commands_exercise_real_http_and_exit_codes() {
     let config = format!("api_token: shared-token\nbase_url: http://{address}\ntimeout: 2\n");
     std::fs::write(dir.path().join("client.yaml"), &config).unwrap();
 
+    let alert = result(
+        cli(
+            dir.path(),
+            &[
+                "--json",
+                "alert",
+                "--title",
+                "Backup complete",
+                "--message",
+                "All files copied",
+                "--severity",
+                "info",
+                "--idempotency-key",
+                "job-123",
+            ],
+        )
+        .await,
+        0,
+    );
+    assert_eq!(alert["notification"]["status"], "sent");
+    let repeated = result(
+        cli(
+            dir.path(),
+            &[
+                "--json",
+                "alert",
+                "--title",
+                "Backup complete",
+                "--message",
+                "All files copied",
+                "--severity",
+                "info",
+                "--idempotency-key",
+                "job-123",
+            ],
+        )
+        .await,
+        0,
+    );
+    assert_eq!(alert, repeated);
+    let id = alert["delivery_id"].to_string();
+    assert_eq!(
+        result(cli(dir.path(), &["--json", "delivery", &id]).await, 0)["severity"],
+        "info"
+    );
+    assert_eq!(
+        result(
+            cli(
+                dir.path(),
+                &[
+                    "--json",
+                    "alert",
+                    "--title",
+                    "fail",
+                    "--message",
+                    "Failed alert"
+                ]
+            )
+            .await,
+            2
+        )["notification"]["status"],
+        "failed"
+    );
+    assert_eq!(
+        result(
+            cli(
+                dir.path(),
+                &[
+                    "--json",
+                    "heartbeat",
+                    "add",
+                    "backup",
+                    "--title",
+                    "Backup",
+                    "--interval-seconds",
+                    "60",
+                    "--notify-on-recovery"
+                ]
+            )
+            .await,
+            0
+        )["interval_seconds"],
+        60
+    );
+    assert_eq!(
+        result(
+            cli(dir.path(), &["--json", "heartbeat", "beat", "backup"]).await,
+            0
+        )["overdue"],
+        false
+    );
+    assert_eq!(
+        result(cli(dir.path(), &["--json", "heartbeat", "list"]).await, 0)
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        result(
+            cli(dir.path(), &["--json", "heartbeat", "remove", "backup"]).await,
+            0
+        )["deleted"],
+        true
+    );
+    let policy = result(
+        cli(
+            dir.path(),
+            &[
+                "--json",
+                "open",
+                "remind-me",
+                "--severity",
+                "critical",
+                "--remind-every-seconds",
+                "300",
+                "--notify-on-resolution",
+            ],
+        )
+        .await,
+        0,
+    );
+    assert_eq!(policy["issue"]["severity"], "critical");
+    assert_eq!(policy["issue"]["remind_every_seconds"], 300);
+    assert_eq!(
+        result(cli(dir.path(), &["--json", "close", "remind-me"]).await, 0)["notification"]["status"],
+        "sent"
+    );
+
     let opened = result(
         cli(
             dir.path(),
@@ -268,4 +397,169 @@ async fn serve_without_pushover_supports_cli_open_close_and_reopen() {
         store.get("x".into()).await.unwrap().notification,
         Notification::not_attempted()
     );
+}
+
+#[tokio::test]
+async fn configured_server_retries_webhooks_and_monitors_heartbeats() {
+    use axum::{Json, Router, http::StatusCode, routing::post};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured = seen.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let webhook = Router::new().route(
+        "/",
+        post(move |Json(event): Json<Value>| {
+            captured.lock().unwrap().push(event);
+            let first = attempts.fetch_add(1, Ordering::SeqCst) == 0;
+            async move {
+                if first {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::NO_CONTENT
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let destination = listener.local_addr().unwrap();
+    let provider = tokio::spawn(async move { axum::serve(listener, webhook).await.unwrap() });
+    let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    std::fs::write(dir.path().join("server.yaml"),format!("api_token: token\nport: {port}\ndelivery:\n  max_attempts: 2\n  retry_base_seconds: 1\ndestinations:\n  local:\n    type: webhook\n    url: http://{destination}/\ndefault_destinations: [local]\n")).unwrap();
+    std::fs::write(
+        dir.path().join("client.yaml"),
+        format!("api_token: token\nbase_url: http://127.0.0.1:{port}\n"),
+    )
+    .unwrap();
+    drop(reservation);
+    let mut child = ChildGuard(
+        Command::new(env!("CARGO_BIN_EXE_flare"))
+            .current_dir(dir.path())
+            .arg("serve")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(1))
+        .build()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            assert!(child.0.try_wait().unwrap().is_none());
+            if http
+                .get(format!("http://127.0.0.1:{port}/readyz"))
+                .send()
+                .await
+                .is_ok_and(|r| r.status().is_success())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let accepted = result(
+        cli(
+            dir.path(),
+            &[
+                "--json",
+                "alert",
+                "--title",
+                "Backup",
+                "--message",
+                "Completed",
+                "--idempotency-key",
+                "backup-job",
+            ],
+        )
+        .await,
+        0,
+    );
+    let id = accepted["delivery_id"].as_i64().unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let job = http
+                .get(format!("http://127.0.0.1:{port}/v1/deliveries/{id}"))
+                .bearer_auth("token")
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap();
+            if job["notification"]["status"] == "sent" {
+                assert_eq!(job["destinations"][0]["attempts"], 2);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    {
+        let events = seen.lock().unwrap();
+        assert_eq!(events[0]["id"], events[1]["id"]);
+    }
+    result(
+        cli(
+            dir.path(),
+            &[
+                "--json",
+                "heartbeat",
+                "add",
+                "backup",
+                "--title",
+                "Backup",
+                "--interval-seconds",
+                "1",
+                "--notify-on-recovery",
+            ],
+        )
+        .await,
+        0,
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| event["kind"] == "heartbeat_missed")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    })
+    .await
+    .unwrap();
+    result(
+        cli(dir.path(), &["--json", "heartbeat", "beat", "backup"]).await,
+        0,
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| event["kind"] == "heartbeat_recovered")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(child);
+    provider.abort();
 }

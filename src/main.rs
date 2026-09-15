@@ -1,17 +1,17 @@
-use std::{path::PathBuf, process::ExitCode, sync::Arc};
+use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Parser, Subcommand};
 use flare::{
     api,
     client::ApiClient,
     config::{ClientConfig, ServerConfig},
+    delivery::DeliveryService,
     models::*,
-    notifications::{Notifier, Pushover},
     store::Store,
 };
 
 #[derive(Parser)]
-#[command(version, about = "Track issues and send Pushover notifications")]
+#[command(version, about = "Track issues and send notifications")]
 struct Cli {
     /// YAML configuration (defaults to server.yaml for serve, client.yaml otherwise).
     #[arg(long, global = true)]
@@ -27,6 +27,26 @@ struct Cli {
 enum Command {
     /// Run the HTTP service.
     Serve,
+    /// Send a one-shot alert.
+    Alert {
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        message: String,
+        #[arg(long, value_enum, default_value_t = Severity::Warning)]
+        severity: Severity,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+        #[arg(long)]
+        group_key: Option<String>,
+    },
+    /// Inspect a durable delivery and its destination outcomes.
+    Delivery { id: i64 },
+    /// Manage expected check-ins from jobs and services.
+    Heartbeat {
+        #[command(subcommand)]
+        command: HeartbeatCommand,
+    },
     /// Open or reopen an issue. An already-open issue is unchanged.
     Open {
         id: String,
@@ -34,6 +54,12 @@ enum Command {
         title: Option<String>,
         #[arg(long)]
         message: Option<String>,
+        #[arg(long, value_enum, default_value_t = Severity::Warning)]
+        severity: Severity,
+        #[arg(long)]
+        remind_every_seconds: Option<u64>,
+        #[arg(long)]
+        notify_on_resolution: bool,
     },
     /// Close an existing issue.
     Close { id: String },
@@ -47,6 +73,32 @@ enum Command {
         limit: u32,
         #[arg(long, default_value_t = 0)]
         offset: u32,
+    },
+}
+
+#[derive(Subcommand)]
+enum HeartbeatCommand {
+    /// Create or replace a monitor; starts its deadline now.
+    Add {
+        id: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        interval_seconds: u64,
+        #[arg(long, default_value_t = 0)]
+        grace_seconds: u64,
+        #[arg(long, value_enum, default_value_t=Severity::Warning)]
+        severity: Severity,
+        #[arg(long)]
+        notify_on_recovery: bool,
+    },
+    /// Record a successful check-in.
+    Beat {
+        id: String,
+    },
+    List,
+    Remove {
+        id: String,
     },
 }
 
@@ -133,25 +185,134 @@ async fn run(cli: Cli) -> anyhow::Result<u8> {
             .init();
         let config = ServerConfig::load(&path)?;
         let store = Store::open_file(&config.database)?;
-        let notifier = config
-            .pushover
-            .map(Pushover::new)
-            .transpose()?
-            .map(|channel| Arc::new(channel) as Arc<dyn Notifier>);
-        let app = api::router(store, notifier, config.api_token);
+        let delivery = DeliveryService::configured(store, &config)?;
+        let app = api::router_with_delivery(delivery.clone(), config.api_token);
         let listener = tokio::net::TcpListener::bind((config.host, config.port))
             .await
             .map_err(|_| anyhow::anyhow!("Cannot bind HTTP listener; check host and port"))?;
         tracing::info!(address = %listener.local_addr()?, "Flare listening");
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown())
-            .await?;
+        let (stop, receiver) = tokio::sync::watch::channel(false);
+        let worker = tokio::spawn(delivery.run(receiver));
+        let signal = stop.clone();
+        let result = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                shutdown().await;
+                let _ = signal.send(true);
+            })
+            .await;
+        let _ = stop.send(true);
+        worker.await?;
+        result?;
         return Ok(0);
     }
     let client = ApiClient::new(ClientConfig::load(&path)?)?;
     match cli.command {
-        Command::Open { id, title, message } => print_mutation(
-            client.open(OpenIssue { id, title, message }).await?,
+        Command::Alert {
+            title,
+            message,
+            severity,
+            idempotency_key,
+            group_key,
+        } => {
+            let result = client
+                .alert(
+                    Alert {
+                        title,
+                        message,
+                        severity,
+                        group_key,
+                    },
+                    idempotency_key,
+                )
+                .await?;
+            if cli.json {
+                println!("{}", serde_json::to_string(&result)?);
+            } else {
+                println!(
+                    "Delivery {}; notification {}",
+                    result.delivery_id,
+                    result.notification.status.as_str()
+                );
+                if let Some(error) = &result.notification.error {
+                    eprintln!("{error}");
+                }
+            }
+            Ok(
+                if result.notification.status == NotificationStatus::Failed {
+                    2
+                } else {
+                    0
+                },
+            )
+        }
+        Command::Delivery { id } => {
+            let result = client.delivery(id).await?;
+            println!(
+                "{}",
+                if cli.json {
+                    serde_json::to_string(&result)?
+                } else {
+                    serde_json::to_string_pretty(&result)?
+                }
+            );
+            Ok(0)
+        }
+        Command::Heartbeat { command } => {
+            let result = match command {
+                HeartbeatCommand::Add {
+                    id,
+                    title,
+                    interval_seconds,
+                    grace_seconds,
+                    severity,
+                    notify_on_recovery,
+                } => serde_json::to_value(
+                    client
+                        .register_heartbeat(HeartbeatInput {
+                            id,
+                            title,
+                            interval_seconds,
+                            grace_seconds,
+                            severity,
+                            notify_on_recovery,
+                        })
+                        .await?,
+                )?,
+                HeartbeatCommand::Beat { id } => serde_json::to_value(client.check_in(id).await?)?,
+                HeartbeatCommand::List => serde_json::to_value(client.heartbeats().await?)?,
+                HeartbeatCommand::Remove { id } => {
+                    client.delete_heartbeat(id).await?;
+                    serde_json::json!({"deleted":true})
+                }
+            };
+            println!(
+                "{}",
+                if cli.json {
+                    serde_json::to_string(&result)?
+                } else {
+                    serde_json::to_string_pretty(&result)?
+                }
+            );
+            Ok(0)
+        }
+        Command::Open {
+            id,
+            title,
+            message,
+            severity,
+            remind_every_seconds,
+            notify_on_resolution,
+        } => print_mutation(
+            client
+                .open(OpenIssue {
+                    id,
+                    title,
+                    message,
+                    severity,
+                    remind_every_seconds,
+                    notify_on_resolution,
+                })
+                .await?,
             cli.json,
         ),
         Command::Close { id } => print_mutation(client.close(id).await?, cli.json),

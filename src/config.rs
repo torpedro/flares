@@ -42,6 +42,14 @@ pub struct ServerConfig {
     pub database: PathBuf,
     pub api_token: Secret,
     pub pushover: Option<PushoverConfig>,
+    #[serde(default)]
+    pub delivery: DeliveryConfig,
+    #[serde(default)]
+    pub destinations: std::collections::BTreeMap<String, DestinationConfig>,
+    #[serde(default)]
+    pub default_destinations: Vec<String>,
+    #[serde(default)]
+    pub routes: std::collections::BTreeMap<crate::models::Severity, Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,24 +106,67 @@ impl ServerConfig {
             bail!("database must name a persistent SQLite file");
         }
         if let Some(pushover) = &config.pushover {
-            for (name, key) in [
-                ("app_token", &pushover.app_token),
-                ("user_key", &pushover.user_key),
-            ] {
-                if key.expose().len() != 30
-                    || !key.expose().bytes().all(|b| b.is_ascii_alphanumeric())
-                {
-                    bail!("pushover.{name} must be a 30-character alphanumeric key");
+            validate_pushover(pushover)?;
+        }
+        let delivery = &config.delivery;
+        if !(1..=20).contains(&delivery.max_attempts)
+            || !(1..=86400).contains(&delivery.retry_base_seconds)
+            || !(delivery.retry_base_seconds..=86400).contains(&delivery.retry_max_seconds)
+            || delivery.group_window_seconds > 86400
+        {
+            bail!(
+                "Invalid delivery limits: attempts 1–20, retry delays 1–86400, grouping 0–86400 seconds"
+            );
+        }
+        for (name, destination) in &config.destinations {
+            if name.is_empty()
+                || name.len() > 64
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            {
+                bail!(
+                    "Destination names must contain 1–64 letters, digits, underscores, or hyphens"
+                );
+            }
+            if name == "pushover" && config.pushover.is_some() {
+                bail!("Destination name pushover is already in use");
+            }
+            match destination {
+                DestinationConfig::Pushover { config } => validate_pushover(config)?,
+                DestinationConfig::Webhook { url, bearer_token } => {
+                    let url = reqwest::Url::parse(url.expose())
+                        .map_err(|_| anyhow::anyhow!("Invalid webhook URL"))?;
+                    if !matches!(url.scheme(), "http" | "https")
+                        || url.host_str().is_none()
+                        || !url.username().is_empty()
+                        || url.password().is_some()
+                        || url.fragment().is_some()
+                    {
+                        bail!(
+                            "Webhook URL must be HTTP or HTTPS without credentials or a fragment"
+                        );
+                    }
+                    if let Some(token) = bearer_token {
+                        validate_token(token)?;
+                    }
                 }
             }
-            if pushover.device.as_ref().is_some_and(|device| {
-                device.is_empty()
-                    || device.len() > 25
-                    || !device
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            }) {
-                bail!("pushover.device must contain 1–25 letters, digits, underscores, or hyphens");
+        }
+        if config.default_destinations.is_empty() && config.pushover.is_some() {
+            config.default_destinations.push("pushover".into());
+        }
+        for names in std::iter::once(&config.default_destinations).chain(config.routes.values()) {
+            let mut seen = std::collections::BTreeSet::new();
+            for name in names {
+                if !(config.destinations.contains_key(name)
+                    || (name == "pushover" && config.pushover.is_some()))
+                {
+                    bail!("Routing references an unknown destination");
+                }
+                if !seen.insert(name) {
+                    bail!("Routing contains a duplicate destination");
+                }
             }
         }
         if config.database.is_relative() {
@@ -151,4 +202,58 @@ impl ClientConfig {
         }
         Ok(config)
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DeliveryConfig {
+    pub max_attempts: u32,
+    pub retry_base_seconds: u64,
+    pub retry_max_seconds: u64,
+    pub rate_limit_per_minute: u32,
+    pub group_window_seconds: u64,
+}
+impl Default for DeliveryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: 1,
+            retry_base_seconds: 10,
+            retry_max_seconds: 3600,
+            rate_limit_per_minute: 120,
+            group_window_seconds: 30,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DestinationConfig {
+    Pushover {
+        config: PushoverConfig,
+    },
+    Webhook {
+        url: Secret,
+        bearer_token: Option<Secret>,
+    },
+}
+
+fn validate_pushover(pushover: &PushoverConfig) -> Result<()> {
+    for (name, key) in [
+        ("app_token", &pushover.app_token),
+        ("user_key", &pushover.user_key),
+    ] {
+        if key.expose().len() != 30 || !key.expose().bytes().all(|b| b.is_ascii_alphanumeric()) {
+            bail!("pushover.{name} must be a 30-character alphanumeric key");
+        }
+    }
+    if pushover.device.as_ref().is_some_and(|device| {
+        device.is_empty()
+            || device.len() > 25
+            || !device
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    }) {
+        bail!("pushover.device must contain 1–25 letters, digits, underscores, or hyphens");
+    }
+    Ok(())
 }

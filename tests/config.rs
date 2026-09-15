@@ -78,3 +78,36 @@ fn invalid_configurations_fail_without_echoing_input() {
     }
     assert!(ClientConfig::load(&dir.path().join("missing")).is_err());
 }
+
+#[test]
+fn delivery_and_routing_configuration_is_validated_and_secrets_are_redacted() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("server.yaml");
+    let valid = "api_token: shared-secret\ndelivery:\n  max_attempts: 3\n  retry_base_seconds: 2\n  retry_max_seconds: 60\ndestinations:\n  audit:\n    type: webhook\n    url: https://example.com/hook?token=webhook-secret\n    bearer_token: bearer-secret\ndefault_destinations: [audit]\nroutes:\n  critical: [audit]\n  info: []\n";
+    std::fs::write(&path, valid).unwrap();
+    let config = ServerConfig::load(&path).unwrap();
+    assert_eq!(config.delivery.max_attempts, 3);
+    let debug = format!("{config:?}");
+    for secret in ["shared-secret", "webhook-secret", "bearer-secret"] {
+        assert!(!debug.contains(secret));
+    }
+    for invalid in [
+        valid.replace("max_attempts: 3", "max_attempts: 0"),
+        valid.replace("retry_max_seconds: 60", "retry_max_seconds: 1"),
+        valid.replace("type: webhook", "type: unknown"),
+        valid.replace(
+            "https://example.com/hook?token=webhook-secret",
+            "file:///secret",
+        ),
+        valid.replace(
+            "default_destinations: [audit]",
+            "default_destinations: [missing]",
+        ),
+        valid.replace("critical: [audit]", "critical: [audit, audit]"),
+        valid.replace("critical:", "urgent:"),
+        valid.replace("bearer-secret", "'has spaces'"),
+    ] {
+        std::fs::write(&path, invalid).unwrap();
+        assert!(ServerConfig::load(&path).is_err());
+    }
+}

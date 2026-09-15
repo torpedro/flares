@@ -35,7 +35,7 @@ impl ApiClient {
             .await
             .map_err(|_| {
                 anyhow::anyhow!(
-                    "API request failed or timed out; check issue state before retrying"
+                    "API request failed or timed out; delivery may have occurred. Reuse the alert idempotency key or check issue state before retrying"
                 )
             })?;
         if !response.status().is_success() {
@@ -46,6 +46,51 @@ impl ApiClient {
             .json()
             .await
             .map_err(|_| anyhow::anyhow!("API returned an invalid response"))
+    }
+
+    pub async fn alert(&self, request: Alert, key: Option<String>) -> anyhow::Result<AlertResult> {
+        request.validate().map_err(anyhow::Error::msg)?;
+        let mut builder = self.client.post(self.url("/v1/alerts")?).json(&request);
+        if let Some(key) = key {
+            if key.is_empty() || key.len() > 200 || !key.bytes().all(|b| b.is_ascii_graphic()) {
+                anyhow::bail!("Invalid idempotency key");
+            }
+            builder = builder.header("Idempotency-Key", key);
+        }
+        self.send(builder).await
+    }
+    pub async fn delivery(&self, id: i64) -> anyhow::Result<Delivery> {
+        self.send(self.client.get(self.url(&format!("/v1/deliveries/{id}"))?))
+            .await
+    }
+    pub async fn register_heartbeat(&self, request: HeartbeatInput) -> anyhow::Result<Heartbeat> {
+        request.validate().map_err(anyhow::Error::msg)?;
+        self.send(self.client.post(self.url("/v1/heartbeats")?).json(&request))
+            .await
+    }
+    pub async fn check_in(&self, id: String) -> anyhow::Result<Heartbeat> {
+        validate_id(&id).map_err(anyhow::Error::msg)?;
+        self.send(
+            self.client
+                .post(self.url("/v1/heartbeats/check-in")?)
+                .json(&CloseIssue { id }),
+        )
+        .await
+    }
+    pub async fn heartbeats(&self) -> anyhow::Result<Vec<Heartbeat>> {
+        self.send(self.client.get(self.url("/v1/heartbeats")?))
+            .await
+    }
+    pub async fn delete_heartbeat(&self, id: String) -> anyhow::Result<()> {
+        validate_id(&id).map_err(anyhow::Error::msg)?;
+        let _: serde_json::Value = self
+            .send(
+                self.client
+                    .delete(self.url("/v1/heartbeat")?)
+                    .query(&[("id", id)]),
+            )
+            .await?;
+        Ok(())
     }
 
     pub async fn open(&self, request: OpenIssue) -> anyhow::Result<MutationResult> {

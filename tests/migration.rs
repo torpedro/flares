@@ -38,6 +38,7 @@ async fn legacy_database_preserves_history_and_allows_disabled_notifications() {
                 id: "existing".into(),
                 title: None,
                 message: None,
+                ..Default::default()
             },
             false,
         )
@@ -60,6 +61,7 @@ async fn legacy_database_preserves_history_and_allows_disabled_notifications() {
                 id: "existing".into(),
                 title: None,
                 message: None,
+                ..Default::default()
             },
             true,
         )

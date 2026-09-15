@@ -125,7 +125,8 @@ async fn alerts_send_every_time_without_creating_or_changing_issues() {
             } else {
                 Notification::sent()
             };
-            assert_eq!(result, json!({"notification":expected}));
+            assert_eq!(result["notification"], json!(expected));
+            assert!(result["delivery_id"].is_i64());
         }
         assert_eq!(h.notifier.calls.load(Ordering::SeqCst), 3);
         assert_eq!(
@@ -211,8 +212,8 @@ async fn alerts_without_a_notifier_report_not_attempted() {
     )
     .await;
     assert_eq!(
-        result,
-        json!({"notification":{"status":"not_attempted","error":null}})
+        result["notification"],
+        json!({"status":"not_attempted","error":null})
     );
     assert_eq!(call(&app, "GET", "/v1/issues", None).await["total"], 0);
 }
@@ -374,6 +375,12 @@ async fn failed_notification_keeps_issue_open_and_is_not_retried() {
 async fn auth_validation_and_unknown_ids_do_not_mutate() {
     let h = Harness::new(false);
     for (method, path, body) in [
+        ("GET", "/metrics", None),
+        ("GET", "/v1/deliveries/1", None),
+        ("GET", "/v1/heartbeats", None),
+        ("POST", "/v1/heartbeats", Some(json!({}))),
+        ("POST", "/v1/heartbeats/check-in", Some(json!({"id":"x"}))),
+        ("DELETE", "/v1/heartbeat?id=x", None),
         (
             "POST",
             "/v1/alerts",
@@ -609,6 +616,7 @@ async fn restart_preserves_issues_and_marks_unfinished_attempt_unknown() {
                     id: id.into(),
                     title: None,
                     message: None,
+                    ..Default::default()
                 },
                 true,
             )
@@ -639,6 +647,7 @@ async fn restart_preserves_issues_and_marks_unfinished_attempt_unknown() {
                 id: "pending".into(),
                 title: None,
                 message: None,
+                ..Default::default()
             },
             true,
         )
@@ -729,6 +738,11 @@ async fn openapi_describes_authenticated_operations() {
         "bearer"
     );
     for (path, method) in [
+        ("/v1/deliveries/{id}", "get"),
+        ("/v1/heartbeats", "get"),
+        ("/v1/heartbeats", "post"),
+        ("/v1/heartbeats/check-in", "post"),
+        ("/v1/heartbeat", "delete"),
         ("/v1/alerts", "post"),
         ("/v1/issues/open", "post"),
         ("/v1/issues/close", "post"),
@@ -741,4 +755,154 @@ async fn openapi_describes_authenticated_operations() {
             json!({"bearer_token":[]})
         );
     }
+}
+
+#[tokio::test]
+async fn alert_idempotency_header_and_delivery_lookup() {
+    let h = Harness::new(false);
+    async fn keyed(app: &Router, body: Value) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/alerts")
+                    .header("Authorization", "Bearer test-token")
+                    .header("Content-Type", "application/json")
+                    .header("Idempotency-Key", "job-123")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        (
+            response.status(),
+            serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
+                .unwrap(),
+        )
+    }
+    let body = json!({"title":"Backup","message":"Complete","severity":"info"});
+    let (status, first) = keyed(&h.app, body.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(keyed(&h.app, body).await.1, first);
+    assert_eq!(
+        keyed(&h.app, json!({"title":"Backup","message":"Different"}))
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    let delivery = call(
+        &h.app,
+        "GET",
+        &format!("/v1/deliveries/{}", first["delivery_id"]),
+        None,
+    )
+    .await;
+    assert_eq!(delivery["severity"], "info");
+    assert_eq!(delivery["destinations"][0]["attempts"], 1);
+    assert_eq!(h.notifier.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn health_readiness_metrics_and_heartbeat_endpoints() {
+    let h = Harness::new(false);
+    for path in ["/healthz", "/readyz"] {
+        assert_eq!(
+            request(&h.app, "GET", path, None, None).await.0,
+            StatusCode::OK
+        );
+    }
+    for body in [
+        json!({"id":"x","title":"Job","interval_seconds":0}),
+        json!({"id":"x","title":"Job","interval_seconds":10,"severity":"invalid"}),
+    ] {
+        assert_eq!(
+            request(
+                &h.app,
+                "POST",
+                "/v1/heartbeats",
+                Some(body),
+                Some("Bearer test-token")
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    let beat=call(&h.app,"POST","/v1/heartbeats",Some(json!({"id":"a/../b","title":"Backup","interval_seconds":60,"grace_seconds":10,"notify_on_recovery":true}))).await;
+    assert_eq!(
+        beat["due_at"].as_i64().unwrap() - beat["last_seen"].as_i64().unwrap(),
+        70
+    );
+    assert_eq!(
+        call(&h.app, "GET", "/v1/heartbeats", None)
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        call(
+            &h.app,
+            "POST",
+            "/v1/heartbeats/check-in",
+            Some(json!({"id":"a/../b"}))
+        )
+        .await["overdue"],
+        false
+    );
+    call(&h.app, "DELETE", "/v1/heartbeat?id=a%2F..%2Fb", None).await;
+    assert_eq!(
+        request(
+            &h.app,
+            "POST",
+            "/v1/heartbeats/check-in",
+            Some(json!({"id":"a/../b"})),
+            Some("Bearer test-token")
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let metrics = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .header("Authorization", "Bearer test-token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(metrics.status(), StatusCode::OK);
+    assert!(
+        metrics.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/plain")
+    );
+    let body = String::from_utf8(
+        to_bytes(metrics.into_body(), 1024 * 1024)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(body.contains("flare_notification_attempts_total 0"));
+    // Liveness survives a database failure; readiness reports it.
+    rusqlite::Connection::open(h._dir.path().join("issues.sqlite3"))
+        .unwrap()
+        .execute("DROP TABLE delivery_metrics", [])
+        .unwrap();
+    assert_eq!(
+        request(&h.app, "GET", "/readyz", None, None).await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        request(&h.app, "GET", "/healthz", None, None).await.0,
+        StatusCode::OK
+    );
 }

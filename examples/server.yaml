@@ -8,3 +8,23 @@ api_token: replace-with-a-long-random-shared-token
 #   app_token: replace-with-your-30-char-token
 #   user_key: replace-with-your-30-char-key
 #   device: phone
+
+# Durable delivery; set max_attempts above 1 to retry failed destinations.
+delivery:
+  max_attempts: 3
+  retry_base_seconds: 10
+  retry_max_seconds: 3600
+  rate_limit_per_minute: 120
+  group_window_seconds: 30
+
+# Optional additional destinations and routes. Without a matching route,
+# default_destinations is used (or top-level pushover when configured).
+# destinations:
+#   audit:
+#     type: webhook
+#     url: https://hooks.example.com/flare
+#     bearer_token: replace-with-webhook-token
+# default_destinations: [audit]
+# routes:
+#   info: [audit]
+#   critical: [audit, pushover]  # requires top-level pushover to be configured

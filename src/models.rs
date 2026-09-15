@@ -69,7 +69,7 @@ impl Notification {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OpenIssue {
     #[schema(min_length = 1, max_length = 200)]
@@ -78,6 +78,11 @@ pub struct OpenIssue {
     pub title: Option<String>,
     #[schema(min_length = 1, max_length = 1024)]
     pub message: Option<String>,
+    #[serde(default)]
+    pub severity: Severity,
+    pub remind_every_seconds: Option<u64>,
+    #[serde(default)]
+    pub notify_on_resolution: bool,
 }
 
 pub fn validate_id(id: &str) -> Result<(), &'static str> {
@@ -91,6 +96,7 @@ pub fn validate_id(id: &str) -> Result<(), &'static str> {
 impl OpenIssue {
     pub fn validate(&self) -> Result<(), &'static str> {
         validate_id(&self.id)?;
+        validate_interval(self.remind_every_seconds)?;
         if self
             .title
             .as_ref()
@@ -118,6 +124,10 @@ pub struct CloseIssue {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Issue {
+    pub severity: Severity,
+    pub remind_every_seconds: Option<u64>,
+    pub notify_on_resolution: bool,
+    pub delivery_id: Option<i64>,
     pub id: String,
     pub status: IssueStatus,
     pub title: String,
@@ -132,15 +142,19 @@ pub struct Issue {
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct MutationResult {
+    pub delivery_id: Option<i64>,
     pub issue: Issue,
     pub changed: bool,
     /// The attempt made by this request, not the latest historical outcome.
     pub notification: Notification,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Alert {
+    #[serde(default)]
+    pub severity: Severity,
+    pub group_key: Option<String>,
     #[schema(min_length = 1, max_length = 250)]
     pub title: String,
     #[schema(min_length = 1, max_length = 1024)]
@@ -149,6 +163,9 @@ pub struct Alert {
 
 impl Alert {
     pub fn validate(&self) -> Result<(), &'static str> {
+        if let Some(key) = &self.group_key {
+            validate_id(key)?;
+        }
         if self.title.is_empty() || self.title.chars().count() > 250 {
             return Err("title must contain between 1 and 250 characters");
         }
@@ -161,6 +178,7 @@ impl Alert {
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct AlertResult {
+    pub delivery_id: i64,
     pub notification: Notification,
 }
 
@@ -190,4 +208,90 @@ fn default_limit() -> u32 {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ErrorBody {
     pub detail: String,
+}
+
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    ToSchema,
+    clap::ValueEnum,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    Info,
+    #[default]
+    Warning,
+    Critical,
+}
+
+pub fn validate_interval(value: Option<u64>) -> Result<(), &'static str> {
+    if value.is_some_and(|value| !(1..=31_536_000).contains(&value)) {
+        return Err("interval must be between 1 and 31536000 seconds");
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HeartbeatInput {
+    pub id: String,
+    pub title: String,
+    pub interval_seconds: u64,
+    #[serde(default)]
+    pub grace_seconds: u64,
+    #[serde(default)]
+    pub severity: Severity,
+    #[serde(default)]
+    pub notify_on_recovery: bool,
+}
+impl HeartbeatInput {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        validate_id(&self.id)?;
+        if self.title.is_empty() || self.title.chars().count() > 250 {
+            return Err("title must contain between 1 and 250 characters");
+        }
+        validate_interval(Some(self.interval_seconds))?;
+        if self.grace_seconds > 31_536_000 {
+            return Err("grace_seconds must be at most 31536000");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Heartbeat {
+    #[serde(flatten)]
+    pub config: HeartbeatInput,
+    pub last_seen: i64,
+    pub due_at: i64,
+    pub overdue: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DestinationOutcome {
+    pub destination: String,
+    pub attempts: u32,
+    pub notification: Notification,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Delivery {
+    pub id: i64,
+    pub title: String,
+    pub message: String,
+    pub severity: Severity,
+    pub kind: String,
+    pub count: u64,
+    pub created_at: i64,
+    pub next_attempt_at: i64,
+    pub notification: Notification,
+    pub destinations: Vec<DestinationOutcome>,
 }
