@@ -401,7 +401,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "happer"
+name = "flare"
 version = "0.1.0"
 dependencies = [
  "anyhow",

@@ -1,4 +1,4 @@
-use happer::{
+use flare::{
     models::{Notification, NotificationStatus, OpenIssue},
     store::Store,
 };

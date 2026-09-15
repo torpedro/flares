@@ -1,7 +1,7 @@
 use std::{path::PathBuf, process::ExitCode, sync::Arc};
 
 use clap::{Parser, Subcommand};
-use happer::{
+use flare::{
     api,
     client::ApiClient,
     config::{ClientConfig, ServerConfig},
@@ -142,7 +142,7 @@ async fn run(cli: Cli) -> anyhow::Result<u8> {
         let listener = tokio::net::TcpListener::bind((config.host, config.port))
             .await
             .map_err(|_| anyhow::anyhow!("Cannot bind HTTP listener; check host and port"))?;
-        tracing::info!(address = %listener.local_addr()?, "Happer listening");
+        tracing::info!(address = %listener.local_addr()?, "Flare listening");
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown())
             .await?;

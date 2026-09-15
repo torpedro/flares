@@ -1,7 +1,7 @@
 # Copy to server.yaml and replace the shared API token.
 host: 127.0.0.1
 port: 8000
-database: happer.sqlite3
+database: flare.sqlite3
 api_token: replace-with-a-long-random-shared-token
 # Optional: uncomment to enable Pushover notifications and supply both keys.
 # pushover:

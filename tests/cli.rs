@@ -6,7 +6,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use happer::{api, models::Notification, notifications::Notifier, store::Store};
+use flare::{api, models::Notification, notifications::Notifier, store::Store};
 use serde_json::{Value, json};
 
 struct FakeNotifier;
@@ -25,7 +25,7 @@ async fn cli(directory: &Path, args: &[&str]) -> Output {
     let directory = directory.to_owned();
     let args: Vec<_> = args.iter().map(|s| s.to_string()).collect();
     tokio::task::spawn_blocking(move || {
-        Command::new(env!("CARGO_BIN_EXE_happer"))
+        Command::new(env!("CARGO_BIN_EXE_flare"))
             .current_dir(directory)
             .args(args)
             .output()
@@ -216,7 +216,7 @@ async fn serve_without_pushover_supports_cli_open_close_and_reopen() {
     .unwrap();
     drop(reservation);
     let mut child = ChildGuard(
-        Command::new(env!("CARGO_BIN_EXE_happer"))
+        Command::new(env!("CARGO_BIN_EXE_flare"))
             .current_dir(dir.path())
             .arg("serve")
             .stdout(std::process::Stdio::null())

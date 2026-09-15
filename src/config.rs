@@ -61,7 +61,7 @@ fn default_port() -> u16 {
     8000
 }
 fn default_database() -> PathBuf {
-    "happer.sqlite3".into()
+    "flare.sqlite3".into()
 }
 fn default_url() -> String {
     "http://127.0.0.1:8000".into()

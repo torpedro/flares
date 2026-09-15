@@ -225,7 +225,7 @@ async fn list_issues(
 }
 
 #[derive(OpenApi)]
-#[openapi(info(title = "Happer", version = "0.1.0"),
+#[openapi(info(title = "Flare", version = "0.1.0"),
     paths(open_issue, close_issue, get_issue, lookup_issue, list_issues),
     components(schemas(OpenIssue, CloseIssue, Issue, IssueList, MutationResult, Notification, NotificationStatus, IssueStatus, ErrorBody)),
     modifiers(&Security))]

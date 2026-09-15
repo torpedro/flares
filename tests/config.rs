@@ -1,4 +1,4 @@
-use happer::config::{ClientConfig, ServerConfig};
+use flare::config::{ClientConfig, ServerConfig};
 
 fn server_yaml() -> String {
     format!(
@@ -14,7 +14,7 @@ fn defaults_and_relative_paths_are_config_relative() {
     let path = dir.path().join("server.yaml");
     std::fs::write(&path, server_yaml()).unwrap();
     let config = ServerConfig::load(&path).unwrap();
-    assert_eq!(config.database, dir.path().join("happer.sqlite3"));
+    assert_eq!(config.database, dir.path().join("flare.sqlite3"));
     assert_eq!(config.port, 8000);
     assert_eq!(config.host.to_string(), "127.0.0.1");
     assert!(!format!("{config:?}").contains("shared-secret"));

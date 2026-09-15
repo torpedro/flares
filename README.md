@@ -1,6 +1,6 @@
-# Happer
+# Flare
 
-A Rust HTTP service and command-line client for tracking issues by ID, with SQLite persistence and Pushover notifications. One `happer` binary provides both the server and client; no Python runtime is needed.
+A Rust HTTP service and command-line client for tracking issues by ID, with SQLite persistence and Pushover notifications. One `flare` binary provides both the server and client; no Python runtime is needed.
 
 ## Build and run
 
@@ -15,18 +15,18 @@ cp examples/client.yaml client.yaml
 Edit the YAML files before starting. Set a shared API token in both files. To enable notifications, add your Pushover application token and user/group key under `pushover` in `server.yaml`. Register an application and obtain credentials through [Pushover](https://pushover.net/api). Omit `pushover` to run without notifications.
 
 ```sh
-./target/release/happer serve --config server.yaml
+./target/release/flare serve --config server.yaml
 ```
 
 In another terminal:
 
 ```sh
-./target/release/happer --config client.yaml open disk-space \
+./target/release/flare --config client.yaml open disk-space \
   --title 'Disk space low' --message 'Less than 5% free on the backup server.'
-./target/release/happer get disk-space
-./target/release/happer list --status open
-./target/release/happer close disk-space
-./target/release/happer --json open disk-space
+./target/release/flare get disk-space
+./target/release/flare list --status open
+./target/release/flare close disk-space
+./target/release/flare --json open disk-space
 ```
 
 Configuration defaults to `server.yaml` for `serve` and `client.yaml` for other commands. Global `--config` and `--json` options work before or after the command. `cargo run --locked -- …` also works during development. To install the binary locally, run `cargo install --path . --locked`.
@@ -38,7 +38,7 @@ Server YAML:
 ```yaml
 host: 127.0.0.1                    # IP address; default is loopback
 port: 8000
-database: happer.sqlite3          # relative to the YAML file's directory
+database: flare.sqlite3          # relative to the YAML file's directory
 api_token: replace-with-a-long-random-shared-token
 pushover:                        # optional; omit this whole section to disable notifications
   app_token: replace-with-your-30-char-token
@@ -99,16 +99,16 @@ Successful mutations, including no-ops and saved openings with notification fail
 
 Errors use `{"detail":"…"}`: 401 for authentication failures, 404 for missing issues, 422 for invalid field values/types, and 503 for unavailable storage. Invalid JSON syntax returns 400, non-JSON content types 415, and bodies over 32 KiB 413. Storage/transport failures can occur after a transition was committed; inspect the issue when an outcome is uncertain.
 
-For example, with `HAPPER_API_TOKEN` set to the shared token in your shell:
+For example, with `FLARE_API_TOKEN` set to the shared token in your shell:
 
 ```sh
 curl --fail-with-body http://127.0.0.1:8000/v1/issues/open \
-  -H "Authorization: Bearer $HAPPER_API_TOKEN" \
+  -H "Authorization: Bearer $FLARE_API_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"id":"disk-space","title":"Disk space low"}'
 
 curl --fail-with-body http://127.0.0.1:8000/v1/issues/close \
-  -H "Authorization: Bearer $HAPPER_API_TOKEN" \
+  -H "Authorization: Bearer $FLARE_API_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"id":"disk-space"}'
 ```

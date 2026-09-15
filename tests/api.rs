@@ -9,7 +9,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use happer::{api, models::*, notifications::Notifier, store::Store};
+use flare::{api, models::*, notifications::Notifier, store::Store};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::sync::Semaphore;
