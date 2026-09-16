@@ -75,15 +75,67 @@ _flare_request() (
     fi
 )
 
-# Mutation helpers accept a JSON object, safely created with jq -n --arg.
 flare_open_issue() {
-    [[ $# == 1 ]] || { _flare_error 'Usage: flare_open_issue JSON'; return 1; }
-    _flare_request POST /v1/issues/open "$1" true
+    [[ $# -ge 1 ]] || { _flare_error 'Usage: flare_open_issue ID [--title TEXT] [--message TEXT] [--severity LEVEL] [--remind-every-seconds SECONDS] [--notify-on-resolution]'; return 1; }
+    local id=$1 data option severity=warning reminder=null resolution=false
+    local title='' message='' has_title=false has_message=false
+    shift
+    while [[ $# -gt 0 ]]; do
+        option=$1
+        case "$option" in
+            --notify-on-resolution) resolution=true; shift; continue ;;
+            --title|--message|--severity|--remind-every-seconds)
+                [[ $# -ge 2 ]] || { _flare_error 'Missing option value'; return 1; }
+                case "$option" in
+                    --title) title=$2; has_title=true ;;
+                    --message) message=$2; has_message=true ;;
+                    --severity) severity=$2 ;;
+                    --remind-every-seconds)
+                        if ! jq -en --arg n "$2" '$n | select(test("^[0-9]+$")) | tonumber | . >= 1 and . <= 31536000' >/dev/null 2>&1; then
+                            _flare_error 'Reminder interval must be between 1 and 31536000 seconds'; return 1
+                        fi
+                        reminder=$2 ;;
+                esac
+                shift 2 ;;
+            *) _flare_error 'Unknown option for flare_open_issue'; return 1 ;;
+        esac
+    done
+    case "$severity" in info|warning|critical) ;; *) _flare_error 'Invalid severity'; return 1 ;; esac
+    data=$(jq -cn --arg id "$id" --arg title "$title" --arg message "$message" \
+        --arg severity "$severity" --arg reminder "$reminder" \
+        --argjson resolution "$resolution" --argjson has_title "$has_title" --argjson has_message "$has_message" \
+        '{id:$id,severity:$severity,notify_on_resolution:$resolution}
+        + (if $has_title then {title:$title} else {} end)
+        + (if $has_message then {message:$message} else {} end)
+        + (if $reminder != "null" then {remind_every_seconds:($reminder|tonumber)} else {} end)') || return 1
+    _flare_request POST /v1/issues/open "$data" true
 }
 flare_alert() {
-    [[ $# -ge 1 && $# -le 2 ]] || { _flare_error 'Usage: flare_alert JSON [IDEMPOTENCY_KEY]'; return 1; }
-    if [[ $# == 2 && -z "$2" ]]; then _flare_error 'Invalid idempotency key'; return 1; fi
-    _flare_request POST /v1/alerts "$1" true "${2-}"
+    [[ $# -ge 2 ]] || { _flare_error 'Usage: flare_alert TITLE MESSAGE [--severity LEVEL] [--group-key KEY] [--idempotency-key KEY]'; return 1; }
+    local title=$1 message=$2 data option severity=warning group='' has_group=false key=''
+    shift 2
+    while [[ $# -gt 0 ]]; do
+        option=$1
+        case "$option" in
+            --severity|--group-key|--idempotency-key)
+                [[ $# -ge 2 ]] || { _flare_error 'Missing option value'; return 1; }
+                case "$option" in
+                    --severity) severity=$2 ;;
+                    --group-key) group=$2; has_group=true ;;
+                    --idempotency-key)
+                        [[ -n "$2" ]] || { _flare_error 'Invalid idempotency key'; return 1; }
+                        key=$2 ;;
+                esac
+                shift 2 ;;
+            *) _flare_error 'Unknown option for flare_alert'; return 1 ;;
+        esac
+    done
+    case "$severity" in info|warning|critical) ;; *) _flare_error 'Invalid severity'; return 1 ;; esac
+    data=$(jq -cn --arg title "$title" --arg message "$message" --arg severity "$severity" \
+        --arg group "$group" --argjson has_group "$has_group" \
+        '{title:$title,message:$message,severity:$severity}
+        + (if $has_group then {group_key:$group} else {} end)') || return 1
+    _flare_request POST /v1/alerts "$data" true "$key"
 }
 flare_register_heartbeat() {
     [[ $# == 1 ]] || { _flare_error 'Usage: flare_register_heartbeat JSON'; return 1; }

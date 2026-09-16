@@ -98,12 +98,19 @@ def normalize(value):
 
 
 def shell(env, op, args):
-    if op in ("open_issue", "register_heartbeat"):
+    if op == "register_heartbeat":
         argv = [json.dumps(args)]
-    elif op == "alert":
-        args = dict(args)
-        key = args.pop("idempotency_key", None)
-        argv = [json.dumps(args)] + ([key] if key is not None else [])
+    elif op in ("open_issue", "alert"):
+        positional = ("id",) if op == "open_issue" else ("title", "message")
+        argv = [args[name] for name in positional]
+        for name, value in args.items():
+            if name in positional or value is None:
+                continue
+            if name == "notify_on_resolution":
+                if value:
+                    argv.append("--notify-on-resolution")
+            else:
+                argv.extend(["--" + name.replace("_", "-"), str(value)])
     elif op == "list_issues":
         argv = [
             args.get("status", ""),
@@ -132,6 +139,83 @@ def shell(env, op, args):
         text=True,
         timeout=20,
     )
+
+
+def test_bash_named_options(server):
+    text = 'Quotes " and \\ and $(echo injected)\n雪'
+    output = shell(
+        server,
+        "open_issue",
+        {
+            "id": "bash-options",
+            "title": text,
+            "message": text,
+            "severity": "critical",
+            "remind_every_seconds": 3600,
+            "notify_on_resolution": True,
+        },
+    )
+    assert output.returncode == 0, output.stderr
+    issue = json.loads(output.stdout)["issue"]
+    assert issue["title"] == issue["message"] == text
+    assert issue["severity"] == "critical"
+    assert issue["remind_every_seconds"] == 3600
+    assert issue["notify_on_resolution"] is True
+
+    output = shell(
+        server,
+        "alert",
+        {
+            "title": text,
+            "message": text,
+            "severity": "info",
+            "group_key": text,
+            "idempotency_key": "bash-options",
+        },
+    )
+    assert output.returncode == 0, output.stderr
+    delivery = json.loads(output.stdout)
+    assert delivery["notification"]["status"] == "pending"
+    output = shell(server, "get_delivery", {"id": delivery["delivery_id"]})
+    assert output.returncode == 0, output.stderr
+    delivery = json.loads(output.stdout)
+    assert delivery["title"] == delivery["message"] == text
+    assert delivery["severity"] == "info"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["flare_open_issue"],
+        ["flare_open_issue", "id", "--title"],
+        ["flare_open_issue", "id", "--unknown"],
+        ["flare_open_issue", "id", "--remind-every-seconds", "1.5"],
+        ["flare_open_issue", "id", "--remind-every-seconds", "0"],
+        ["flare_alert", "title"],
+        ["flare_alert", "title", "message", "--group-key"],
+        ["flare_alert", "title", "message", "--severity", "invalid"],
+        ["flare_alert", "title", "message", "--idempotency-key", ""],
+    ],
+)
+def test_bash_argument_errors(argv):
+    output = subprocess.run(
+        [
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            'source "$1"; shift; _flare_request() { exit 99; }; "$@"',
+            "test",
+            str(ROOT / "clients/bash/flare.sh"),
+            *argv,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert output.returncode == 1, output.stderr
+    assert output.stderr
+    assert not output.stdout
 
 
 @pytest.mark.parametrize("backend", ["rust", "python", "python_async", "bash"])
