@@ -1,0 +1,18 @@
+[package]
+name = "flare-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared HTTP API types for Flare"
+readme = "README.md"
+
+[features]
+default = []
+openapi = ["dep:utoipa"]
+cli = ["dep:clap"]
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+utoipa = { version = "5", features = ["chrono"], optional = true }
+clap = { version = "4", features = ["derive"], optional = true }

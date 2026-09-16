@@ -303,7 +303,7 @@ async fn list_issues(
 }
 
 #[derive(OpenApi)]
-#[openapi(info(title = "Flare", version = "0.1.0"),
+#[openapi(info(title = "Flare"),
     paths(health, readiness, metrics, get_delivery, register_heartbeat, list_heartbeats, check_in, delete_heartbeat, send_alert, open_issue, close_issue, get_issue, lookup_issue, list_issues),
     components(schemas(Delivery, DestinationOutcome, Severity, Heartbeat, HeartbeatInput, Alert, AlertResult, OpenIssue, CloseIssue, Issue, IssueList, MutationResult, Notification, NotificationStatus, IssueStatus, ErrorBody)),
     modifiers(&Security))]

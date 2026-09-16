@@ -205,7 +205,12 @@ async fn run(cli: Cli) -> anyhow::Result<u8> {
         result?;
         return Ok(0);
     }
-    let client = ApiClient::new(ClientConfig::load(&path)?)?;
+    let config = ClientConfig::load(&path)?;
+    let client = ApiClient::with_timeout(
+        config.base_url,
+        config.api_token.expose(),
+        std::time::Duration::from_secs_f64(config.timeout),
+    )?;
     match cli.command {
         Command::Alert {
             title,

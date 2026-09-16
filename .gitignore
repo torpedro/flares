@@ -27,3 +27,10 @@ target
 *.sqlite3-wal
 /server.yaml
 /client.yaml
+
+# Python and release artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+dist/

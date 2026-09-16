@@ -326,6 +326,54 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
 
 [[package]]
+name = "flare"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "clap",
+ "flare-client",
+ "flare-types",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "subtle",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "utoipa",
+]
+
+[[package]]
+name = "flare-client"
+version = "0.1.0"
+dependencies = [
+ "flare-types",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "flare-types"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "serde",
+ "utoipa",
+]
+
+[[package]]
 name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -398,30 +446,6 @@ dependencies = [
  "r-efi",
  "rand_core",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "flare"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "chrono",
- "clap",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "subtle",
- "tempfile",
- "thiserror",
- "tokio",
- "tower",
- "tracing",
- "tracing-subscriber",
- "utoipa",
 ]
 
 [[package]]

@@ -249,13 +249,66 @@ CLI exit codes:
 
 `--json` returns the API result unchanged for successful calls and notification failures. Application errors produce `{"error":"…"}`; command-line parsing errors use the standard help/error text. A duplicate open succeeds with exit 0 even if the issue's previous notification failed. Use `get` to inspect historical outcomes.
 
+## Client libraries
+
+All clients live in this repository and cover issues, alerts, delivery inspection,
+heartbeats, health, readiness, and metrics:
+
+| Client | Package | Documentation |
+| --- | --- | --- |
+| Rust (async) | `flare-client`, with shared `flare-types` | [Rust client](clients/rust/README.md) |
+| Python (sync and async) | `flare-client`, imported as `flare_client` | [Python client](clients/python/README.md) |
+| Bash | Sourceable `flare.sh`, using curl and jq | [Bash client](clients/bash/README.md) |
+
+The root Cargo package remains the server and CLI. `crates/flare-types` contains the
+wire models, with opt-in OpenAPI and CLI derives. `clients/rust` has no server or
+database dependencies. Python packaging and development use uv. Clients take their
+URL, bearer token, and timeout directly; server and CLI YAML configuration is unchanged.
+
+The [OpenAPI contract](api/openapi.json) is generated from the server. Client methods
+are handwritten and checked against shared scenarios under `tests/contract`.
+Clients do not automatically retry requests or follow redirects. Inspect notification
+status even after HTTP success; Bash uses exit 2 for an issue/alert mutation whose
+notification failed. Reuse an alert's idempotency key after an uncertain outcome.
+
 ## Development
 
 ```sh
-cargo test --locked
-cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo build --release --locked
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo build --workspace --examples --locked
+cargo build --bin flare --locked
+uv sync --project clients/python --locked
+uv run --project clients/python ruff check --config clients/python/pyproject.toml clients/python tests/contract scripts
+uv run --project clients/python ruff format --check --config clients/python/pyproject.toml clients/python tests/contract scripts
+bash clients/bash/tests/source.sh
+uv run --project clients/python pytest -q
 ```
 
 Commit `Cargo.lock` for reproducible dependency resolution. Tests use temporary databases and fake notification channels/local HTTP servers; they do not contact Pushover or send real alerts. Coverage includes lifecycle transitions, concurrent calls, late outcomes, restarts, YAML validation, authentication, CLI behavior, and provider failures.
+
+Commit `clients/python/uv.lock` as well. The shared suite requires Bash, curl, jq,
+and the debug server and Rust adapter built above. Python's unit tests can run
+independently with `uv run --project clients/python pytest clients/python/tests`.
+CI also runs ShellCheck, detects OpenAPI/version drift, and builds package artifacts.
+
+## Releases
+
+The server and all clients share one version and `vX.Y.Z` tag. Update the workspace
+version, local Cargo dependency versions, Python package and `__version__`, Bash
+`FLARE_CLIENT_VERSION`, both lockfiles, and the changelog together. Regenerate
+`api/openapi.json` using the command in [api/README.md](api/README.md).
+
+```sh
+uv run --project clients/python python scripts/check_versions.py
+uv run --project clients/python python scripts/build_artifacts.py
+```
+
+The build script creates a native server/CLI archive, two Rust `.crate` files,
+a Python wheel and source distribution, and a Bash archive in `dist/`. It verifies
+the extracted Rust packages without server dependencies and imports the installed
+Python wheel in isolation. CI uploads these artifacts on Linux; nothing is published
+automatically. Publish `flare-types` before `flare-client` when releasing to crates.io;
+Python and Bash have separate artifacts from the same tag. Record release changes
+in [CHANGELOG.md](CHANGELOG.md).

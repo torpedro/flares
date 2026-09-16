@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "flare-client"
+version = "0.1.0"
+description = "Synchronous and asynchronous HTTP clients for Flare"
+requires-python = ">=3.11"
+readme = "README.md"
+license = "MIT"
+dependencies = ["httpx>=0.28,<1", "pydantic>=2.10,<3"]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "../../tests/contract"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
