@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use reqwest::{Client, Url};
-use tokio::sync::Semaphore;
 
 use crate::{
     config::PushoverConfig,
@@ -11,6 +10,11 @@ use crate::{
 
 #[async_trait]
 pub trait Notifier: Send + Sync {
+    /// Maximum simultaneous requests; the delivery service reserves capacity before
+    /// spending an attempt or starting the request deadline.
+    fn max_concurrency(&self) -> usize {
+        4
+    }
     async fn send(&self, title: &str, message: &str) -> Notification;
     async fn send_delivery(&self, delivery: &Delivery) -> Notification {
         self.send(&delivery.title, &delivery.message).await
@@ -20,7 +24,6 @@ pub trait Notifier: Send + Sync {
 pub struct Pushover {
     config: PushoverConfig,
     client: Client,
-    permits: Semaphore,
     endpoint: Url,
     timeout: Duration,
 }
@@ -34,16 +37,12 @@ impl Pushover {
                 .retry(reqwest::retry::never())
                 .timeout(Duration::from_secs(10))
                 .build()?,
-            permits: Semaphore::new(2),
             endpoint: Url::parse("https://api.pushover.net/1/messages.json")?,
             timeout: Duration::from_secs(10),
         })
     }
 
     async fn attempt(&self, title: &str, message: &str, severity: Severity) -> Notification {
-        let Ok(_permit) = self.permits.acquire().await else {
-            return Notification::failed("Notification channel is unavailable.");
-        };
         let mut form = vec![
             ("token", self.config.app_token.expose()),
             ("user", self.config.user_key.expose()),
@@ -88,8 +87,11 @@ impl Pushover {
 
 #[async_trait]
 impl Notifier for Pushover {
+    fn max_concurrency(&self) -> usize {
+        2
+    }
     async fn send(&self, title: &str, message: &str) -> Notification {
-        // The deadline also covers capacity waiting and reading the response body.
+        // Capacity is reserved by the delivery service before this deadline starts.
         tokio::time::timeout(
             self.timeout,
             self.attempt(title, message, Severity::Warning),
@@ -322,5 +324,140 @@ mod tests {
         let result = check(StatusCode::OK, r#"{"status":1}"#, Duration::from_secs(1)).await;
         assert_eq!(result.status, crate::models::NotificationStatus::Failed);
         assert!(result.error.unwrap().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn slow_pushover_deliveries_wait_without_spending_attempts_or_request_time() {
+        use crate::{
+            delivery::DeliveryService,
+            models::{Alert, NotificationStatus},
+            store::Store,
+        };
+        use tokio::sync::Semaphore;
+
+        let started = Arc::new(Semaphore::new(0));
+        let release = Arc::new(Semaphore::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route(
+            "/",
+            post({
+                let (started, release, active, peak, calls) = (
+                    started.clone(),
+                    release.clone(),
+                    active.clone(),
+                    peak.clone(),
+                    calls.clone(),
+                );
+                move || {
+                    let (started, release, active, peak, calls) = (
+                        started.clone(),
+                        release.clone(),
+                        active.clone(),
+                        peak.clone(),
+                        calls.clone(),
+                    );
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        let concurrent = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(concurrent, Ordering::SeqCst);
+                        started.add_permits(1);
+                        release.acquire().await.unwrap().forget();
+                        tokio::time::sleep(Duration::from_millis(600)).await;
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        axum::Json(serde_json::json!({"status": 1}))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let config = serde_yaml_ng::from_str(&format!(
+            "app_token: {}\nuser_key: {}\n",
+            "a".repeat(30),
+            "u".repeat(30)
+        ))
+        .unwrap();
+        let mut pushover = Pushover::new(config).unwrap();
+        pushover.endpoint = Url::parse(&format!("http://{address}/")).unwrap();
+        // Each request fits its deadline; two waves do not fit one shared deadline.
+        pushover.timeout = Duration::from_secs(1);
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_file(&dir.path().join("db.sqlite3")).unwrap();
+        let service = DeliveryService::new(store, Some(Arc::new(pushover)));
+        assert_eq!(service.settings.max_attempts, 1);
+        let mut tasks = tokio::task::JoinSet::new();
+        for n in 0..4 {
+            let service = service.clone();
+            tasks.spawn(async move {
+                service
+                    .alert(
+                        Alert {
+                            title: format!("Alert {n}"),
+                            message: "slow".into(),
+                            ..Default::default()
+                        },
+                        None,
+                    )
+                    .await
+                    .unwrap()
+            });
+        }
+        tokio::time::timeout(Duration::from_secs(5), started.acquire_many(2))
+            .await
+            .unwrap()
+            .unwrap()
+            .forget();
+        let jobs = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let jobs: Vec<Delivery> = service
+                    .store
+                    .run(|db| {
+                        db.prepare("SELECT payload FROM deliveries")?
+                            .query_map([], |row| row.get::<_, String>(0))?
+                            .map(|value| Ok(serde_json::from_str(&value?).unwrap()))
+                            .collect()
+                    })
+                    .await
+                    .unwrap();
+                if jobs.len() == 4 {
+                    break jobs;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            jobs.iter()
+                .map(|job| job.destinations[0].attempts)
+                .sum::<u32>(),
+            2
+        );
+        assert_eq!(
+            jobs.iter()
+                .filter(|job| job.destinations[0].attempts == 0)
+                .count(),
+            2
+        );
+        assert!(
+            jobs.iter()
+                .all(|job| job.notification.status == NotificationStatus::Pending)
+        );
+        release.add_permits(4);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(result) = tasks.join_next().await {
+                let job = result.unwrap();
+                assert_eq!(job.notification.status, NotificationStatus::Sent);
+                assert_eq!(job.destinations[0].attempts, 1);
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+        server.abort();
     }
 }

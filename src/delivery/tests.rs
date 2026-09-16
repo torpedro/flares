@@ -112,7 +112,9 @@ async fn retries_are_bounded_and_do_not_resend_successful_destinations() {
     let (_dir, mut service, first) = setup();
     let second = Arc::new(Fake::default());
     second.failures.store(10, Ordering::SeqCst);
-    service.channels.insert("second".into(), second.clone());
+    service
+        .channels
+        .insert("second".into(), Channel::new(second.clone()));
     service.defaults.push("second".into());
     service.settings.max_attempts = 3;
     service.settings.retry_base_seconds = 2;
@@ -240,7 +242,9 @@ async fn grouping_summarizes_once_and_rate_limits_defer_without_spending_attempt
 async fn severity_routes_and_group_boundaries_are_respected() {
     let (_dir, mut service, default) = setup();
     let urgent = Arc::new(Fake::default());
-    service.channels.insert("urgent".into(), urgent.clone());
+    service
+        .channels
+        .insert("urgent".into(), Channel::new(urgent.clone()));
     service
         .routes
         .insert(Severity::Critical, vec!["urgent".into()]);
@@ -288,6 +292,121 @@ async fn severity_routes_and_group_boundaries_are_respected() {
         .await
         .unwrap();
     assert_ne!(one.id, two.id);
+}
+
+#[tokio::test]
+async fn expired_group_stays_closed_after_rate_limit_deferral_and_restart() {
+    let (dir, mut service, channel) = setup();
+    service.settings.rate_limit_per_minute = 1;
+    let request = Alert {
+        group_key: Some("backups".into()),
+        ..alert()
+    };
+    let original = service.alert(request.clone(), None).await.unwrap();
+    let id = original.id;
+    service
+        .store
+        .run(move |db| {
+            // Simulate expiry without waiting on the wall clock, then exhaust this minute's budget.
+            let now = Utc::now().timestamp();
+            let mut job = load(db, id)?;
+            job.created_at = now - 60;
+            job.next_attempt_at = 0;
+            save(db, &job, "pending")?;
+            db.execute(
+                "UPDATE deliveries SET group_until=? WHERE id=?",
+                params![now - 30, id],
+            )?;
+            db.execute(
+                "UPDATE delivery_metrics SET minute=?,minute_count=1 WHERE id=1",
+                [now / 60],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let deferred = service.process(id).await.unwrap();
+    assert_eq!(deferred.notification.status, NotificationStatus::Pending);
+    assert_eq!(deferred.destinations[0].attempts, 0);
+    assert!(deferred.next_attempt_at > Utc::now().timestamp());
+    drop(service);
+    let mut service = DeliveryService::new(
+        Store::open_file(&dir.path().join("db.sqlite3")).unwrap(),
+        Some(channel.clone()),
+    );
+    // A changed configuration also must not reopen the expired window.
+    service.settings.group_window_seconds = 600;
+    let next = service
+        .alert(
+            Alert {
+                message: "New window".into(),
+                ..request.clone()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_ne!(next.id, id);
+    assert_eq!(service.get(id).await.unwrap().count, 1);
+    assert_eq!(service.get(id).await.unwrap().message, original.message);
+    let joined = service.alert(request, None).await.unwrap();
+    assert_eq!(joined.id, next.id);
+    assert_eq!(joined.count, 2);
+    due(&service, id).await;
+    assert_eq!(
+        service.process(id).await.unwrap().notification.status,
+        NotificationStatus::Sent
+    );
+    assert_eq!(channel.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn grouping_migration_preserves_legacy_deliveries_and_idempotency_keys() {
+    let (dir, service, channel) = setup();
+    let request = Alert {
+        group_key: Some("backups".into()),
+        ..alert()
+    };
+    let original = service
+        .alert(request.clone(), Some("legacy-key".into()))
+        .await
+        .unwrap();
+    let path = dir.path().join("db.sqlite3");
+    drop(service);
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch(
+        "DROP INDEX deliveries_group_window;
+        ALTER TABLE deliveries DROP COLUMN group_until;
+        CREATE INDEX deliveries_group ON deliveries(group_key, state, due);",
+    )
+    .unwrap();
+    drop(db);
+    let service = DeliveryService::new(Store::open_file(&path).unwrap(), Some(channel.clone()));
+    let replay = service
+        .alert(request.clone(), Some("legacy-key".into()))
+        .await
+        .unwrap();
+    assert_eq!(replay.id, original.id);
+    assert_eq!(replay.count, 1);
+    let fresh = service.alert(request.clone(), None).await.unwrap();
+    assert_ne!(fresh.id, original.id);
+    drop(service);
+    // Migration is idempotent and newly recorded windows survive another restart.
+    let service = DeliveryService::new(Store::open_file(&path).unwrap(), Some(channel.clone()));
+    let joined = service.alert(request, None).await.unwrap();
+    assert_eq!(joined.id, fresh.id);
+    assert_eq!(joined.count, 2);
+    due(&service, original.id).await;
+    assert_eq!(
+        service
+            .process(original.id)
+            .await
+            .unwrap()
+            .notification
+            .status,
+        NotificationStatus::Sent
+    );
+    assert_eq!(channel.calls.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]

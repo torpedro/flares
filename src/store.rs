@@ -135,6 +135,7 @@ impl Store {
             tx.execute_batch(NOTIFICATIONS_SCHEMA)?;
         }
         tx.execute_batch(crate::delivery::SCHEMA)?;
+        crate::delivery::migrate_grouping(&tx)?;
         tx.execute_batch(
             "UPDATE notifications SET status = 'unknown',
             error = 'Service stopped before the notification outcome was recorded; not retried.'

@@ -16,10 +16,9 @@ use std::{
 pub(crate) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS deliveries (
  id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL, state TEXT NOT NULL,
- due INTEGER NOT NULL, group_key TEXT, issue_id TEXT, opening_count INTEGER
+ due INTEGER NOT NULL, group_key TEXT, group_until INTEGER, issue_id TEXT, opening_count INTEGER
 );
 CREATE INDEX IF NOT EXISTS deliveries_due ON deliveries(state, due);
-CREATE INDEX IF NOT EXISTS deliveries_group ON deliveries(group_key, state, due);
 CREATE TABLE IF NOT EXISTS alert_keys (key TEXT PRIMARY KEY, request TEXT NOT NULL, delivery_id INTEGER NOT NULL REFERENCES deliveries(id));
 CREATE TABLE IF NOT EXISTS issue_policies (issue_id TEXT PRIMARY KEY REFERENCES issues(id), payload TEXT NOT NULL, next_reminder INTEGER);
 CREATE TABLE IF NOT EXISTS heartbeats (id TEXT PRIMARY KEY, payload TEXT NOT NULL, due INTEGER NOT NULL, overdue INTEGER NOT NULL);
@@ -27,6 +26,23 @@ CREATE TABLE IF NOT EXISTS delivery_metrics (id INTEGER PRIMARY KEY CHECK(id=1),
 INSERT OR IGNORE INTO delivery_metrics(id) VALUES(1);
 UPDATE deliveries SET state='pending' WHERE state='running';
 ";
+
+pub(crate) fn migrate_grouping(db: &Connection) -> Result<(), rusqlite::Error> {
+    let columns = db
+        .prepare("PRAGMA table_info(deliveries)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if !columns.iter().any(|name| name == "group_until") {
+        // Legacy due times may already have been deferred. Keep those deliveries,
+        // but do not guess a grouping deadline or admit any more alerts into them.
+        db.execute_batch("ALTER TABLE deliveries ADD COLUMN group_until INTEGER;")?;
+    }
+    db.execute_batch(
+        "DROP INDEX IF EXISTS deliveries_group;
+        CREATE INDEX IF NOT EXISTS deliveries_group_window
+        ON deliveries(group_key, state, group_until);",
+    )
+}
 
 fn encode<T: serde::Serialize>(value: &T) -> Result<String, StoreError> {
     serde_json::to_string(value).map_err(|_| StoreError::Unavailable)
@@ -82,7 +98,7 @@ pub(crate) fn enqueue(
         && !outcomes.is_empty()
         && let Some(key) = &alert.group_key
     {
-        let ids = db.prepare("SELECT id FROM deliveries WHERE group_key=? AND state='pending' AND due>? ORDER BY id DESC")?.query_map(params![key,now], |r| r.get::<_,i64>(0))?.collect::<Result<Vec<_>,_>>()?;
+        let ids = db.prepare("SELECT id FROM deliveries WHERE group_key=? AND state='pending' AND group_until>? ORDER BY id DESC")?.query_map(params![key,now], |r| r.get::<_,i64>(0))?.collect::<Result<Vec<_>,_>>()?;
         for id in ids {
             let mut job = load(db, id)?;
             if job.severity == alert.severity
@@ -109,7 +125,11 @@ pub(crate) fn enqueue(
             error: None,
         }
     };
-    let grouped = kind == "alert" && alert.group_key.is_some() && !outcomes.is_empty();
+    let grouped = kind == "alert"
+        && alert.group_key.is_some()
+        && !outcomes.is_empty()
+        && plan.settings.group_window_seconds > 0;
+    let group_until = grouped.then_some(now + plan.settings.group_window_seconds as i64);
     let mut job = Delivery {
         id: 0,
         title: alert.title.clone(),
@@ -118,12 +138,7 @@ pub(crate) fn enqueue(
         kind: kind.into(),
         count: 1,
         created_at: now,
-        next_attempt_at: now
-            + if grouped {
-                plan.settings.group_window_seconds as i64
-            } else {
-                0
-            },
+        next_attempt_at: group_until.unwrap_or(now),
         notification,
         destinations: outcomes,
     };
@@ -132,7 +147,7 @@ pub(crate) fn enqueue(
     } else {
         "pending"
     };
-    db.execute("INSERT INTO deliveries(payload,state,due,group_key,issue_id,opening_count) VALUES('',?,?,?,?,?)", params![state,job.next_attempt_at,if kind == "alert" {alert.group_key.as_deref()} else {None},link.map(|v|v.0),link.map(|v|v.1)])?;
+    db.execute("INSERT INTO deliveries(payload,state,due,group_key,group_until,issue_id,opening_count) VALUES('',?,?,?,?,?,?)", params![state,job.next_attempt_at,if kind == "alert" {alert.group_key.as_deref()} else {None},group_until,link.map(|v|v.0),link.map(|v|v.1)])?;
     job.id = db.last_insert_rowid();
     save(db, &job, state)?;
     if job.destinations.is_empty() {
@@ -145,10 +160,27 @@ pub(crate) fn enqueue(
 }
 
 #[derive(Clone)]
+struct Channel {
+    notifier: Arc<dyn Notifier>,
+    capacity: Arc<tokio::sync::Semaphore>,
+}
+
+impl Channel {
+    fn new(notifier: Arc<dyn Notifier>) -> Self {
+        Self {
+            capacity: Arc::new(tokio::sync::Semaphore::new(
+                notifier.max_concurrency().max(1),
+            )),
+            notifier,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct DeliveryService {
     pub store: Store,
     pub settings: DeliveryConfig,
-    channels: BTreeMap<String, Arc<dyn Notifier>>,
+    channels: BTreeMap<String, Channel>,
     permits: Arc<tokio::sync::Semaphore>,
     defaults: Vec<String>,
     routes: BTreeMap<Severity, Vec<String>>,
@@ -157,7 +189,7 @@ impl DeliveryService {
     pub fn new(store: Store, notifier: Option<Arc<dyn Notifier>>) -> Self {
         let mut channels = BTreeMap::new();
         if let Some(notifier) = notifier {
-            channels.insert("pushover".into(), notifier);
+            channels.insert("pushover".into(), Channel::new(notifier));
         }
         Self {
             store,
@@ -169,11 +201,11 @@ impl DeliveryService {
         }
     }
     pub fn configured(store: Store, config: &ServerConfig) -> anyhow::Result<Self> {
-        let mut channels: BTreeMap<String, Arc<dyn Notifier>> = BTreeMap::new();
+        let mut channels = BTreeMap::new();
         if let Some(pushover) = &config.pushover {
             channels.insert(
                 "pushover".into(),
-                Arc::new(Pushover::new(pushover.clone())?),
+                Channel::new(Arc::new(Pushover::new(pushover.clone())?)),
             );
         }
         for (name, destination) in &config.destinations {
@@ -183,7 +215,7 @@ impl DeliveryService {
                     Arc::new(Webhook::new(url.clone(), bearer_token.clone())?)
                 }
             };
-            channels.insert(name.clone(), channel);
+            channels.insert(name.clone(), Channel::new(channel));
         }
         Ok(Self {
             store,
@@ -272,6 +304,21 @@ impl DeliveryService {
             {
                 continue;
             }
+            let channel = self
+                .channels
+                .get(&job.destinations[index].destination)
+                .cloned();
+            let capacity = match &channel {
+                Some(channel) => Some(
+                    channel
+                        .capacity
+                        .clone()
+                        .acquire_owned()
+                        .await
+                        .map_err(|_| StoreError::Unavailable)?,
+                ),
+                None => None,
+            };
             let limit = self.settings.rate_limit_per_minute;
             let permitted = self.store.run(move |db| {
                 let tx = db.transaction()?;
@@ -300,18 +347,19 @@ impl DeliveryService {
                         .take(1024)
                         .collect();
             }
-            let outcome = if let Some(channel) = self
-                .channels
-                .get(&job.destinations[index].destination)
-                .cloned()
-            {
+            let outcome = if let Some(channel) = channel {
                 // Catch provider panics and bound every channel, including custom implementations.
                 tokio::spawn(async move {
-                    tokio::time::timeout(Duration::from_secs(10), channel.send_delivery(&event))
-                        .await
-                        .unwrap_or_else(|_| {
-                            Notification::failed("Notification timed out; delivery is uncertain.")
-                        })
+                    // The task owns the permit until the request finishes, even if its caller exits.
+                    let _capacity = capacity;
+                    tokio::time::timeout(
+                        Duration::from_secs(10),
+                        channel.notifier.send_delivery(&event),
+                    )
+                    .await
+                    .unwrap_or_else(|_| {
+                        Notification::failed("Notification timed out; delivery is uncertain.")
+                    })
                 })
                 .await
                 .unwrap_or_else(|_| {

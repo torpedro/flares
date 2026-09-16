@@ -150,9 +150,9 @@ The HTTP 200 response contains `delivery_id` and `notification`, for example:
 
 ### Grouping and rate limits
 
-Supply `group_key` in an alert body, or `--group-key backups`, to group alerts for `delivery.group_window_seconds` (default 30). Alerts with the same key, severity, and destinations share one delivery during the window. The window is fixed from the first alert. The notification contains the count and latest title/message, truncated to the provider's message limit. Idempotent retries do not increase the count. Set the window to 0 to disable grouping.
+Supply `group_key` in an alert body, or `--group-key backups`, to group alerts for `delivery.group_window_seconds` (default 30). Alerts with the same key, severity, and destinations share one delivery during the window. The window is fixed from the first alert and persisted separately from the next delivery attempt: rate limiting, retries, restarts, and configuration changes do not extend it. The notification contains the count and latest title/message, truncated to the provider's message limit. Idempotent retries do not increase the count. Set the window to 0 to disable grouping. On upgrade, existing deliveries without a recorded grouping deadline remain queued but no longer accept additional alerts.
 
-`delivery.rate_limit_per_minute` limits destination attempts across all alert types, including retries (default 120; 0 disables the limit). It uses fixed UTC minute buckets. Excess work stays queued without spending an attempt. Up to four deliveries run concurrently, and Pushover also limits its own concurrent requests to two per destination.
+`delivery.rate_limit_per_minute` limits destination attempts across all alert types, including retries (default 120; 0 disables the limit). It uses fixed UTC minute buckets. Excess work stays queued without spending an attempt. Up to four deliveries run concurrently, with at most two requests per Pushover destination. The service reserves destination capacity before spending an attempt and starting the request deadline; waiting for capacity does not consume either.
 
 ## Delivery configuration and routing
 
