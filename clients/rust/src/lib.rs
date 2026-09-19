@@ -78,7 +78,8 @@ impl ApiClient {
                 status: response.status().as_u16(),
             });
         }
-        response.json().await.map_err(|_| Error::Decode)
+        let body = response.bytes().await.map_err(|_| Error::Transport)?;
+        serde_json::from_slice(&body).map_err(|_| Error::Decode)
     }
 
     pub async fn alert(&self, request: Alert, key: Option<String>) -> Result<AlertResult, Error> {
@@ -215,6 +216,6 @@ impl ApiClient {
                 status: response.status().as_u16(),
             });
         }
-        response.text().await.map_err(|_| Error::Decode)
+        response.text().await.map_err(|_| Error::Transport)
     }
 }

@@ -18,8 +18,9 @@ def settings(base_url: str, token: str, timeout: float) -> tuple[str, dict[str, 
         or not url.host
         or url.username
         or url.password
-        or url.query
-        or url.fragment
+        # HTTPX retains empty delimiters even when query/fragment values are empty.
+        or "?" in str(url)
+        or "#" in str(url)
     ):
         raise ValidationError(
             "API base URL must be HTTP(S) without credentials, query, or fragment"

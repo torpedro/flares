@@ -30,7 +30,16 @@ def responder():
             self.send_response(code)
             if mode == "redirect":
                 self.send_header("Location", "/should-not-be-requested")
+            if mode in ("body_timeout", "body_disconnect"):
+                self.send_header("Content-Length", "100")
             self.end_headers()
+            if mode in ("body_timeout", "body_disconnect"):
+                self.wfile.write(b'{"status":')
+                self.wfile.flush()
+                if mode == "body_timeout":
+                    time.sleep(0.2)
+                self.close_connection = True
+                return
             payload = b'{"unexpected":"secret"}' if mode == "shape" else b"secret-not-json"
             try:
                 self.wfile.write(payload)
@@ -61,21 +70,25 @@ def responder():
 
 @pytest.mark.parametrize("backend", ["rust", "python", "python_async", "bash"])
 @pytest.mark.parametrize(
-    "mode,kind,status",
+    "op,mode,kind,status",
     [
-        ("malformed", "decode", None),
-        ("shape", "decode", None),
-        ("redirect", "http", 302),
-        ("http", "http", 503),
-        ("disconnect", "transport", None),
-        ("timeout", "transport", None),
+        ("health", "malformed", "decode", None),
+        ("health", "shape", "decode", None),
+        ("health", "redirect", "http", 302),
+        ("health", "http", "http", 503),
+        ("health", "disconnect", "transport", None),
+        ("health", "timeout", "transport", None),
+        ("health", "body_disconnect", "transport", None),
+        ("health", "body_timeout", "transport", None),
+        ("metrics", "body_disconnect", "transport", None),
+        ("metrics", "body_timeout", "transport", None),
     ],
 )
-def test_failure_does_not_retry_or_leak_secrets(responder, backend, mode, kind, status):
+def test_failure_does_not_retry_or_leak_secrets(responder, backend, op, mode, kind, status):
     state, env = responder
     state["mode"] = mode
     if backend == "bash":
-        output = shell(env, "health", {})
+        output = shell(env, op, {})
         assert output.returncode == 1
         assert not output.stdout
         assert "secret" not in output.stderr
@@ -84,7 +97,7 @@ def test_failure_does_not_retry_or_leak_secrets(responder, backend, mode, kind, 
     elif backend == "rust":
         output = subprocess.run(
             [str(ROOT / "target/debug/examples/contract_driver")],
-            input='{"op":"health","args":{}}',
+            input=json.dumps({"op": op, "args": {}}),
             env=env,
             capture_output=True,
             text=True,
@@ -108,12 +121,12 @@ def test_failure_does_not_retry_or_leak_secrets(responder, backend, mode, kind, 
             if status:
                 assert error.value.status_code == status
             if kind == "transport":
-                assert error.value.timed_out == (mode == "timeout")
+                assert error.value.timed_out == (mode in ("timeout", "body_timeout"))
 
         if backend == "python":
             with Client(env["FLARE_BASE_URL"], env["FLARE_API_TOKEN"], timeout=0.05) as client:
                 with pytest.raises(error_type) as error:
-                    client.health()
+                    getattr(client, op)()
                 check_error(error)
         else:
 
@@ -122,7 +135,7 @@ def test_failure_does_not_retry_or_leak_secrets(responder, backend, mode, kind, 
                     env["FLARE_BASE_URL"], env["FLARE_API_TOKEN"], timeout=0.05
                 ) as client:
                     with pytest.raises(error_type) as error:
-                        await client.health()
+                        await getattr(client, op)()
                     check_error(error)
 
             asyncio.run(check())
