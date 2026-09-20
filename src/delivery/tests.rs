@@ -48,6 +48,10 @@ async fn due(service: &DeliveryService, id: i64) {
         .run(move |db| {
             let mut job = load(db, id)?;
             job.next_attempt_at = 0;
+            db.execute(
+                "UPDATE delivery_targets SET due=0 WHERE delivery_id=?",
+                [id],
+            )?;
             save(db, &job, "pending")
         })
         .await
@@ -312,6 +316,10 @@ async fn expired_group_stays_closed_after_rate_limit_deferral_and_restart() {
             let mut job = load(db, id)?;
             job.created_at = now - 60;
             job.next_attempt_at = 0;
+            db.execute(
+                "UPDATE delivery_targets SET due=0 WHERE delivery_id=?",
+                [id],
+            )?;
             save(db, &job, "pending")?;
             db.execute(
                 "UPDATE deliveries SET group_until=? WHERE id=?",
@@ -567,6 +575,10 @@ async fn crash_after_reserving_last_attempt_reports_uncertainty_without_retrying
             let mut job = load(db, id)?;
             job.destinations[0].attempts = 1;
             job.next_attempt_at = 0;
+            db.execute(
+                "UPDATE delivery_targets SET due=0 WHERE delivery_id=?",
+                [id],
+            )?;
             save(db, &job, "running")
         })
         .await
@@ -584,4 +596,386 @@ async fn crash_after_reserving_last_attempt_reports_uncertainty_without_retrying
     );
     assert!(job.notification.error.unwrap().contains("uncertain"));
     assert!(channel.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn destination_retry_policies_keep_independent_deadlines_and_attempt_limits() {
+    let (_dir, mut service, slow) = setup();
+    let fast = Arc::new(Fake::default());
+    slow.failures.store(10, Ordering::SeqCst);
+    fast.failures.store(10, Ordering::SeqCst);
+    service
+        .channels
+        .insert("fast".into(), Channel::new(fast.clone()));
+    service.defaults.push("fast".into());
+    service.policies.insert(
+        "pushover".into(),
+        DestinationPolicy {
+            max_attempts: 2,
+            retry_base_seconds: 30,
+            retry_max_seconds: 30,
+            rate_limit: None,
+        },
+    );
+    service.policies.insert(
+        "fast".into(),
+        DestinationPolicy {
+            max_attempts: 3,
+            retry_base_seconds: 1,
+            retry_max_seconds: 1,
+            rate_limit: None,
+        },
+    );
+    let first = service.alert(alert(), None).await.unwrap();
+    assert_eq!(first.notification.status, NotificationStatus::Pending);
+    let id = first.id;
+    for expected in [2, 3] {
+        service
+            .store
+            .run(move |db| {
+                let mut job = load(db, id)?;
+                job.next_attempt_at = 0;
+                db.execute(
+                    "UPDATE delivery_targets SET due=0 WHERE delivery_id=? AND destination='fast'",
+                    [id],
+                )?;
+                save(db, &job, "pending")
+            })
+            .await
+            .unwrap();
+        let retry = service.process(id).await.unwrap();
+        assert_eq!(retry.destinations[0].attempts, 1);
+        assert_eq!(retry.destinations[1].attempts, expected);
+    }
+    due(&service, id).await;
+    let final_job = service.process(id).await.unwrap();
+    assert_eq!(final_job.notification.status, NotificationStatus::Failed);
+    assert_eq!(slow.calls.lock().unwrap().len(), 2);
+    assert_eq!(fast.calls.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn destination_rate_limit_survives_restart_and_does_not_block_other_destinations() {
+    let (dir, mut service, limited) = setup();
+    let other = Arc::new(Fake::default());
+    service
+        .channels
+        .insert("other".into(), Channel::new(other.clone()));
+    service.defaults.push("other".into());
+    let policy = DestinationPolicy {
+        max_attempts: 1,
+        retry_base_seconds: 1,
+        retry_max_seconds: 1,
+        rate_limit: Some(crate::config::RateLimit {
+            attempts: 1,
+            window_seconds: 86400,
+        }),
+    };
+    service.policies.insert("pushover".into(), policy.clone());
+    assert_eq!(
+        service
+            .alert(alert(), None)
+            .await
+            .unwrap()
+            .notification
+            .status,
+        NotificationStatus::Sent
+    );
+    drop(service);
+    let mut service = DeliveryService::new(
+        Store::open_file(&dir.path().join("db.sqlite3")).unwrap(),
+        Some(limited.clone()),
+    );
+    service
+        .channels
+        .insert("other".into(), Channel::new(other.clone()));
+    service.defaults.push("other".into());
+    service.policies.insert("pushover".into(), policy);
+    let job = service.alert(alert(), None).await.unwrap();
+    assert_eq!(job.notification.status, NotificationStatus::Pending);
+    assert_eq!(job.destinations[0].attempts, 0);
+    assert_eq!(
+        job.destinations[1].notification.status,
+        NotificationStatus::Sent
+    );
+    assert_eq!(limited.calls.lock().unwrap().len(), 1);
+    assert_eq!(other.calls.lock().unwrap().len(), 2);
+    service
+        .store
+        .run(|db| {
+            db.execute("UPDATE destination_rate_limits SET count=0", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    due(&service, job.id).await;
+    assert_eq!(
+        service.process(job.id).await.unwrap().notification.status,
+        NotificationStatus::Sent
+    );
+    assert_eq!(other.calls.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn queue_limit_rejects_atomically_but_allows_deduplication_and_grouping() {
+    let (_dir, mut service, _channel) = setup();
+    service.settings.queue_limit = 1;
+    let request = Alert {
+        group_key: Some("x".into()),
+        ..alert()
+    };
+    let accepted = service
+        .alert(request.clone(), Some("same".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        service
+            .alert(request.clone(), Some("same".into()))
+            .await
+            .unwrap()
+            .id,
+        accepted.id
+    );
+    assert_eq!(service.alert(request, None).await.unwrap().count, 2);
+    assert!(matches!(
+        service.alert(alert(), None).await,
+        Err(StoreError::QueueFull)
+    ));
+    let opening = OpenIssue {
+        id: "disk".into(),
+        ..Default::default()
+    };
+    assert!(matches!(
+        service
+            .store
+            .open_planned(opening, true, Some(service.plan(Severity::Warning)))
+            .await,
+        Err(StoreError::QueueFull)
+    ));
+    assert!(matches!(
+        service.store.get("disk".into()).await,
+        Err(StoreError::NotFound)
+    ));
+    due(&service, accepted.id).await;
+    service.process(accepted.id).await.unwrap();
+    assert_eq!(
+        service
+            .alert(alert(), None)
+            .await
+            .unwrap()
+            .notification
+            .status,
+        NotificationStatus::Sent
+    );
+}
+
+#[tokio::test]
+async fn retention_pins_keyed_deliveries_and_never_deletes_pending_work() {
+    let (_dir, mut service, _channel) = setup();
+    service.retention = RetentionConfig {
+        deliveries: Some(10),
+        idempotency_keys: Some(100),
+    };
+    let keyed = service.alert(alert(), Some("key".into())).await.unwrap();
+    let unkeyed = service.alert(alert(), None).await.unwrap();
+    let pending = service
+        .alert(
+            Alert {
+                group_key: Some("x".into()),
+                ..alert()
+            },
+            Some("pending".into()),
+        )
+        .await
+        .unwrap();
+    service
+        .store
+        .run(|db| {
+            db.execute(
+                "UPDATE deliveries SET completed_at=? WHERE state='done'",
+                [Utc::now().timestamp() - 20],
+            )?;
+            db.execute("UPDATE alert_keys SET created_at=0 WHERE key='pending'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    service.cleanup().await.unwrap();
+    assert!(matches!(
+        service.get(unkeyed.id).await,
+        Err(StoreError::NotFound)
+    ));
+    assert_eq!(
+        service.alert(alert(), Some("key".into())).await.unwrap().id,
+        keyed.id
+    );
+    assert_eq!(
+        service.get(pending.id).await.unwrap().notification.status,
+        NotificationStatus::Pending
+    );
+    service
+        .store
+        .run(|db| {
+            db.execute("UPDATE alert_keys SET created_at=0 WHERE key='key'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    service.cleanup().await.unwrap();
+    assert!(matches!(
+        service.get(keyed.id).await,
+        Err(StoreError::NotFound)
+    ));
+    assert_ne!(
+        service.alert(alert(), Some("key".into())).await.unwrap().id,
+        keyed.id
+    );
+    assert_eq!(
+        service
+            .store
+            .run(|db| Ok(db.query_row(
+                "SELECT COUNT(*) FROM alert_keys WHERE key='pending'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?))
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        service
+            .store
+            .run(move |db| Ok(db.query_row(
+                "SELECT COUNT(*) FROM delivery_targets WHERE delivery_id=?",
+                [unkeyed.id],
+                |r| r.get::<_, i64>(0)
+            )?))
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn scheduler_keeps_partial_progress_when_queue_fills() {
+    let (_dir, mut service, _channel) = setup();
+    service.settings.queue_limit = 1;
+    for id in ["one", "two"] {
+        service
+            .register_heartbeat(HeartbeatInput {
+                id: id.into(),
+                title: id.into(),
+                interval_seconds: 60,
+                grace_seconds: 0,
+                severity: Severity::Warning,
+                notify_on_recovery: false,
+            })
+            .await
+            .unwrap();
+    }
+    service
+        .store
+        .run(|db| {
+            db.execute("UPDATE heartbeats SET due=0", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    service.schedule().await.unwrap();
+    let first = jobs(&service).await;
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        service
+            .heartbeats()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|b| b.overdue)
+            .count(),
+        1
+    );
+    service.process(first[0].id).await.unwrap();
+    service.schedule().await.unwrap();
+    assert_eq!(jobs(&service).await.len(), 2);
+    assert!(
+        service
+            .heartbeats()
+            .await
+            .unwrap()
+            .iter()
+            .all(|b| b.overdue)
+    );
+}
+
+#[tokio::test]
+async fn policy_migration_preserves_legacy_keys_jobs_and_starts_retention_at_upgrade() {
+    let (dir, service, channel) = setup();
+    let completed = service.alert(alert(), Some("sent".into())).await.unwrap();
+    let grouped = Alert {
+        group_key: Some("x".into()),
+        ..alert()
+    };
+    let pending = service
+        .alert(grouped.clone(), Some("pending".into()))
+        .await
+        .unwrap();
+    drop(service);
+    let path = dir.path().join("db.sqlite3");
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch(
+        "DROP INDEX deliveries_completed;
+        ALTER TABLE deliveries DROP COLUMN completed_at;
+        DROP INDEX alert_keys_created;
+        ALTER TABLE alert_keys DROP COLUMN created_at;
+        DROP TABLE delivery_targets;
+        DROP TABLE destination_rate_limits;",
+    )
+    .unwrap();
+    drop(db);
+    let before = Utc::now().timestamp();
+    let mut service = DeliveryService::new(Store::open_file(&path).unwrap(), Some(channel.clone()));
+    service.retention = RetentionConfig {
+        deliveries: Some(60),
+        idempotency_keys: Some(60),
+    };
+    service.cleanup().await.unwrap();
+    assert_eq!(
+        service
+            .alert(alert(), Some("sent".into()))
+            .await
+            .unwrap()
+            .id,
+        completed.id
+    );
+    assert_eq!(
+        service
+            .alert(grouped, Some("pending".into()))
+            .await
+            .unwrap()
+            .id,
+        pending.id
+    );
+    let created = service
+        .store
+        .run(|db| {
+            Ok(
+                db.query_row("SELECT MIN(created_at) FROM alert_keys", [], |r| {
+                    r.get::<_, i64>(0)
+                })?,
+            )
+        })
+        .await
+        .unwrap();
+    assert!(created >= before);
+    due(&service, pending.id).await;
+    assert_eq!(
+        service
+            .process(pending.id)
+            .await
+            .unwrap()
+            .notification
+            .status,
+        NotificationStatus::Sent
+    );
+    assert_eq!(channel.calls.lock().unwrap().len(), 2);
 }

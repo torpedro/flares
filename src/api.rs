@@ -56,6 +56,10 @@ impl IntoResponse for ApiError {
 impl From<StoreError> for ApiError {
     fn from(error: StoreError) -> Self {
         match error {
+            StoreError::QueueFull => Self(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Delivery queue is full; retry later",
+            ),
             StoreError::NotFound => Self(StatusCode::NOT_FOUND, "Resource not found"),
             StoreError::Conflict => Self(
                 StatusCode::CONFLICT,

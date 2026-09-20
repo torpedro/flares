@@ -14,6 +14,8 @@ pub enum StoreError {
     NotFound,
     #[error("Idempotency key was already used with a different request")]
     Conflict,
+    #[error("Delivery queue is full")]
+    QueueFull,
     #[error("Issue storage is unavailable")]
     Sqlite(#[from] rusqlite::Error),
     #[error("Issue storage is unavailable")]
@@ -136,6 +138,7 @@ impl Store {
         }
         tx.execute_batch(crate::delivery::SCHEMA)?;
         crate::delivery::migrate_grouping(&tx)?;
+        crate::delivery::migrate_policies(&tx)?;
         tx.execute_batch(
             "UPDATE notifications SET status = 'unknown',
             error = 'Service stopped before the notification outcome was recorded; not retried.'

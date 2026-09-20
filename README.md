@@ -12,9 +12,10 @@ cp examples/server.yaml server.yaml
 cp examples/client.yaml client.yaml
 ```
 
-Edit the YAML files before starting. Set a shared API token in both files. To enable notifications, add your Pushover application token and user/group key under `pushover` in `server.yaml`. Register an application and obtain credentials through [Pushover](https://pushover.net/api). Omit `pushover` to run without notifications.
+Edit the YAML files before starting. Set a shared API token in both files. To enable notifications, define a destination under `destinations` and select it in `routing.default`. Pushover requires an application token and user/group key from [Pushover](https://pushover.net/api). An explicit empty routing list disables notifications.
 
 ```sh
+./target/release/flare config check --config server.yaml
 ./target/release/flare serve --config server.yaml
 ```
 
@@ -29,32 +30,43 @@ In another terminal:
 ./target/release/flare --json open disk-space
 ```
 
-Configuration defaults to `server.yaml` for `serve` and `client.yaml` for other commands. Global `--config` and `--json` options work before or after the command. `cargo run --locked -- …` also works during development. To install the binary locally, run `cargo install --path . --locked`.
+Configuration defaults to `server.yaml` for `serve` and `config` commands, and `client.yaml` for client commands (including `config --client`). Global `--config` and `--json` options work before or after the command. `cargo run --locked -- …` also works during development. To install the binary locally, run `cargo install --path . --locked`.
 
 ## Configuration
 
 Server YAML:
 
 ```yaml
-host: 127.0.0.1                    # IP address; default is loopback
-port: 8000
-database: flare.sqlite3          # relative to the YAML file's directory
-api_token: replace-with-a-long-random-shared-token
-pushover:                        # optional; omit this whole section to disable notifications
-  app_token: replace-with-your-30-char-token
-  user_key: replace-with-your-30-char-key
-  # device: phone                # optional; otherwise all recipient devices
+server:
+  listen: 127.0.0.1:8000
+  api_token: {env: FLARE_API_TOKEN}
+storage:
+  database: flare.sqlite3       # relative to the YAML file's directory
+destinations:
+  phone:
+    type: pushover
+    app_token: {env: PUSHOVER_APP_TOKEN}
+    user_key: {file: /run/secrets/pushover-user-key}
+routing:
+  default: [phone]
 ```
 
-The `api_token` is required. The `pushover` section is optional; omitting it or setting it to `null` disables notifications. If supplied, both Pushover keys are required and must each contain 30 ASCII letters/digits; `user_key` also accepts a group key. Optional `device` is one device name, up to 25 letters, digits, underscores, or hyphens. The server creates the database and its parent directory. Unknown settings, incomplete Pushover sections, and invalid settings fail startup. Parser errors and provider response bodies are not logged because they may contain secrets.
+Secrets accept literal strings, `{env: VARIABLE}`, or `{file: PATH}` references. Pushover requires both 30-character ASCII alphanumeric credentials and accepts an optional `device`. Unknown fields, missing secrets, invalid values, and unknown routing destinations fail validation. The server creates the database and its parent directory only when serving.
 
-Client YAML only needs the service credentials:
+```sh
+flare config check --config server.yaml
+flare config show --config server.yaml --json  # effective defaults; secrets redacted
+```
+
+Client YAML:
 
 ```yaml
 base_url: http://127.0.0.1:8000
-api_token: replace-with-a-long-random-shared-token
-timeout: 15                       # seconds; total request timeout
+api_token: {env: FLARE_API_TOKEN}
+timeout: 15s
 ```
+
+Use `flare config check --client` to validate client settings. Validation does not open the database or contact providers. See the [configuration guide](docs/configuration.md) for all defaults, duration syntax, overrides, retention, and legacy migration. Existing YAML formats remain supported; explicit empty default routes now remain disabled.
 
 Keep real configuration files private; `server.yaml` and `client.yaml` are gitignored. For remote use, terminate HTTPS at a reverse proxy and point clients to its HTTPS URL. The built-in listener serves HTTP and defaults to localhost. Run one service instance per database; SQLite is bundled into the binary. SIGINT and SIGTERM stop the listener gracefully.
 
@@ -146,42 +158,47 @@ The HTTP 200 response contains `delivery_id` and `notification`, for example:
 
 `sent` means every selected destination accepted the notification. `pending` means it is queued, being sent, grouped, rate limited, or awaiting a retry. `failed` means the attempt limit was reached for at least one destination; `error` gives a sanitized explanation. `not_attempted` means the route has no destinations. Inspect individual outcomes with `flare delivery 42` or authenticated `GET /v1/deliveries/42`.
 
-`Idempotency-Key` is optional and accepts 1–200 printable ASCII characters without spaces. Reusing a key with the same parsed request returns the same delivery ID and its current outcome, including after restart; reusing it with different content returns HTTP 409. Keys are retained indefinitely in this version. Without a key, each request creates a new delivery. Reuse the same key after a timeout or lost response.
+`Idempotency-Key` is optional and accepts 1–200 printable ASCII characters without spaces. Reusing a key with the same parsed request returns the same delivery ID and its current outcome, including after restart; reusing it with different content returns HTTP 409. Keys are retained indefinitely by default; optional `storage.retention.idempotency_keys` sets their lifetime. Reusing a key after expiration can create a new notification. Without a key, each request creates a new delivery. Reuse the same key after a timeout or lost response.
 
 ### Grouping and rate limits
 
-Supply `group_key` in an alert body, or `--group-key backups`, to group alerts for `delivery.group_window_seconds` (default 30). Alerts with the same key, severity, and destinations share one delivery during the window. The window is fixed from the first alert and persisted separately from the next delivery attempt: rate limiting, retries, restarts, and configuration changes do not extend it. The notification contains the count and latest title/message, truncated to the provider's message limit. Idempotent retries do not increase the count. Set the window to 0 to disable grouping. On upgrade, existing deliveries without a recorded grouping deadline remain queued but no longer accept additional alerts.
+Supply `group_key` in an alert body, or `--group-key backups`, to group alerts for `delivery.group_window` (default `30s`). Alerts with the same key, severity, and destinations share one delivery during the window. The window is fixed from the first alert and persisted separately from the next delivery attempt: rate limiting, retries, restarts, and configuration changes do not extend it. The notification contains the count and latest title/message, truncated to the provider's message limit. Idempotent retries do not increase the count. Set the window to `0s` to disable grouping. On upgrade, existing deliveries without a recorded grouping deadline remain queued but no longer accept additional alerts.
 
-`delivery.rate_limit_per_minute` limits destination attempts across all alert types, including retries (default 120; 0 disables the limit). It uses fixed UTC minute buckets. Excess work stays queued without spending an attempt. Up to four deliveries run concurrently, with at most two requests per Pushover destination. The service reserves destination capacity before spending an attempt and starting the request deadline; waiting for capacity does not consume either.
+`delivery.rate_limit` limits destination attempts across all alert types, including retries (default 120 attempts per `1m`; attempts 0 disables the limit). Fixed windows align to Unix time. Destinations can add their own retry and rate policies. Excess work stays queued without spending an attempt. Up to four deliveries run concurrently, with at most two requests per Pushover destination. The service reserves destination capacity before spending an attempt and starting the request deadline; waiting for capacity does not consume either.
 
 ## Delivery configuration and routing
 
-Existing top-level `pushover` configuration remains supported and supplies the default destination. Named destinations allow separate routing by severity:
+Named destinations allow separate routing by severity. Retry fields can also be overridden per destination:
 
 ```yaml
 delivery:
-  max_attempts: 3                # default 1; includes the initial attempt
-  retry_base_seconds: 10         # default 10
-  retry_max_seconds: 3600        # default 3600
-  rate_limit_per_minute: 120
-  group_window_seconds: 30
+  retry:
+    max_attempts: 3             # default 1; includes the initial attempt
+    base_delay: 10s
+    max_delay: 1h
+  rate_limit: {attempts: 120, window: 1m}
+  group_window: 30s
+  queue_limit: 10000
 
 destinations:
   audit:
     type: webhook
     url: https://hooks.example.com/flare
-    bearer_token: replace-with-webhook-token  # optional
+    bearer_token: {env: WEBHOOK_TOKEN}
+    delivery:
+      retry: {max_attempts: 5}
+      rate_limit: {attempts: 20, window: 1m}
   urgent:
     type: pushover
-    config:
-      app_token: replace-with-your-30-char-token
-      user_key: replace-with-your-30-char-key
-      device: phone
+    app_token: {env: PUSHOVER_APP_TOKEN}
+    user_key: {env: PUSHOVER_USER_KEY}
+    device: phone
 
-default_destinations: [audit]
-routes:
-  critical: [audit, urgent]
-  info: [audit]
+routing:
+  default: [audit]
+  severity:
+    critical: [audit, urgent]
+    info: []
 ```
 
 Severity is `info`, `warning` (default), or `critical`. A route replaces the default destination list for that severity; an empty list explicitly disables it. Named destinations are used only when listed in defaults or a route. Pushover priorities are respectively -1, 0, and 1; critical alerts do not use Pushover's repeating emergency mode.
@@ -233,11 +250,11 @@ Structured tracing events record delivery ID, destination name, attempt number, 
 
 Issue transitions and their delivery jobs commit in one SQLite transaction. Alert jobs and idempotency keys also commit together. The service tries immediately when work is due and capacity permits, and its background worker handles grouping, rate-limited work, retries, reminders, and heartbeat notifications.
 
-`max_attempts` defaults to 1 to preserve the previous one-attempt policy; set it above 1 to enable retries. Failed destinations retry with exponential delays capped by `retry_max_seconds`. Destinations with recorded success are not sent again. Both queued jobs and incomplete jobs recover on startup, subject to the attempt limit. Requests may return `pending`; CLI exit 0 in that case means accepted, not delivered. Inspect the delivery later for its final outcome.
+`delivery.retry.max_attempts` defaults to 1 to preserve the previous one-attempt policy; set it above 1 to enable retries. Failed destinations retry with exponential delays capped by `max_delay`. Destinations with recorded success are not sent again. Both queued jobs and incomplete jobs recover on startup, subject to the attempt limit. Requests may return `pending`; CLI exit 0 in that case means accepted, not delivered. Inspect the delivery later for its final outcome.
 
 Delivery is best effort with bounded retries, not exactly once. A provider may accept a message before a timeout or a crash prevents recording success, so a retry can duplicate it. A crash after reserving an attempt consumes that attempt even if the request was not sent. With no attempts left, the job fails rather than retrying indefinitely. Old database entries that predate durable jobs retain the earlier `unknown` outcome for interrupted notifications and cannot be replayed.
 
-Run one service instance per database. Delivery records and idempotency keys are retained indefinitely; no automatic cleanup runs. A delivery uses the destination names selected when it was created and the current configuration for those names when sent. Removing a configured destination makes its queued attempts fail. Increasing retry limits affects queued jobs; completed failures are not automatically reopened. Disabled routes record `not_attempted` and enabling them later does not replay skipped notifications.
+Run one service instance per database. Delivery records and idempotency keys are retained indefinitely by default. Optional retention runs cleanup approximately once per minute, retaining active jobs and delivery records pinned by unexpired keys. The queue defaults to 10000 pending/running jobs; excess new work returns HTTP 503 without committing its associated issue transition. See [queue limits and retention](docs/configuration.md#queue-limits-and-retention). A delivery uses the destination names selected when it was created and the current configuration for those names when sent. Removing a configured destination makes its queued attempts fail. Increasing retry limits affects queued jobs; completed failures are not automatically reopened. Disabled routes record `not_attempted` and enabling them later does not replay skipped notifications.
 
 CLI exit codes:
 

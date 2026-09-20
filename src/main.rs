@@ -25,6 +25,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Validate configuration or display resolved settings with secrets redacted.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     /// Run the HTTP service.
     Serve,
     /// Send a one-shot alert.
@@ -73,6 +78,20 @@ enum Command {
         limit: u32,
         #[arg(long, default_value_t = 0)]
         offset: u32,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Validate configuration without opening the database or contacting providers.
+    Check {
+        #[arg(long)]
+        client: bool,
+    },
+    /// Display effective configuration with all secrets redacted.
+    Show {
+        #[arg(long)]
+        client: bool,
     },
 }
 
@@ -172,12 +191,47 @@ fn print_mutation(result: MutationResult, json: bool) -> anyhow::Result<u8> {
 
 async fn run(cli: Cli) -> anyhow::Result<u8> {
     let path = cli.config.unwrap_or_else(|| {
-        if matches!(cli.command, Command::Serve) {
+        if matches!(
+            cli.command,
+            Command::Serve
+                | Command::Config {
+                    command: ConfigCommand::Check { client: false }
+                        | ConfigCommand::Show { client: false }
+                }
+        ) {
             "server.yaml".into()
         } else {
             "client.yaml".into()
         }
     });
+    if let Command::Config { command } = &cli.command {
+        let client = matches!(
+            command,
+            ConfigCommand::Check { client: true } | ConfigCommand::Show { client: true }
+        );
+        let value = if client {
+            ClientConfig::load(&path)?.effective()
+        } else {
+            ServerConfig::load(&path)?.effective()
+        };
+        match command {
+            ConfigCommand::Check { .. } => {
+                if cli.json {
+                    println!("{}", serde_json::json!({"valid": true}));
+                } else {
+                    println!("Configuration is valid");
+                }
+            }
+            ConfigCommand::Show { .. } => {
+                if cli.json {
+                    println!("{}", serde_json::to_string_pretty(&value)?);
+                } else {
+                    print!("{}", serde_yaml_ng::to_string(&value)?);
+                }
+            }
+        }
+        return Ok(0);
+    }
     if matches!(cli.command, Command::Serve) {
         tracing_subscriber::fmt()
             .with_writer(std::io::stderr)
@@ -361,7 +415,7 @@ async fn run(cli: Cli) -> anyhow::Result<u8> {
             }
             Ok(0)
         }
-        Command::Serve => unreachable!(),
+        Command::Serve | Command::Config { .. } => unreachable!(),
     }
 }
 

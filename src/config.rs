@@ -1,29 +1,59 @@
+//! Configuration loading has no database or network side effects.
+use crate::models::Severity;
+use anyhow::{Result, bail};
+use serde::{Deserialize, Serialize};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fmt, fs,
     net::IpAddr,
     path::{Path, PathBuf},
 };
-
-use anyhow::{Result, bail};
-use serde::{Deserialize, de::DeserializeOwned};
+mod file;
 
 #[derive(Clone, Deserialize)]
-#[serde(transparent)]
-pub struct Secret(String);
-
+#[serde(untagged, deny_unknown_fields)]
+pub enum Secret {
+    Literal(String),
+    Environment { env: String },
+    File { file: PathBuf },
+}
 impl Secret {
     pub fn expose(&self) -> &str {
-        &self.0
+        match self {
+            Self::Literal(value) => value,
+            _ => panic!("Secret reference must be resolved by configuration loading"),
+        }
+    }
+    fn resolve(&mut self, directory: &Path, field: &str) -> Result<()> {
+        let value = match self {
+            Self::Literal(_) => return Ok(()),
+            Self::Environment { env } => std::env::var(env).map_err(|_| {
+                anyhow::anyhow!("{field}: environment variable is missing or not UTF-8")
+            })?,
+            Self::File { file } => fs::read_to_string(directory.join(file))
+                .map_err(|_| anyhow::anyhow!("{field}: cannot read secret file as UTF-8"))?
+                .trim_end_matches(['\r', '\n'])
+                .to_owned(),
+        };
+        *self = Self::Literal(value);
+        Ok(())
     }
 }
-
 impl fmt::Debug for Secret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("[REDACTED]")
     }
 }
+impl Serialize for Secret {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str("[REDACTED]")
+    }
+}
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PushoverConfig {
     pub app_token: Secret,
@@ -31,202 +61,27 @@ pub struct PushoverConfig {
     pub device: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct ServerConfig {
-    #[serde(default = "default_host")]
     pub host: IpAddr,
-    #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default = "default_database")]
     pub database: PathBuf,
     pub api_token: Secret,
-    pub pushover: Option<PushoverConfig>,
-    #[serde(default)]
     pub delivery: DeliveryConfig,
-    #[serde(default)]
-    pub destinations: std::collections::BTreeMap<String, DestinationConfig>,
-    #[serde(default)]
+    pub destinations: BTreeMap<String, DestinationConfig>,
     pub default_destinations: Vec<String>,
-    #[serde(default)]
-    pub routes: std::collections::BTreeMap<crate::models::Severity, Vec<String>>,
+    pub routes: BTreeMap<Severity, Vec<String>>,
+    pub retention: RetentionConfig,
+    pub destination_policies: BTreeMap<String, DestinationPolicy>,
 }
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct ClientConfig {
-    #[serde(default = "default_url")]
     pub base_url: String,
     pub api_token: Secret,
-    #[serde(default = "default_timeout")]
     pub timeout: f64,
 }
 
-fn default_host() -> IpAddr {
-    IpAddr::from([127, 0, 0, 1])
-}
-fn default_port() -> u16 {
-    8000
-}
-fn default_database() -> PathBuf {
-    "flare.sqlite3".into()
-}
-fn default_url() -> String {
-    "http://127.0.0.1:8000".into()
-}
-fn default_timeout() -> f64 {
-    15.0
-}
-
-fn load<T: DeserializeOwned>(path: &Path) -> Result<T> {
-    let text = fs::read_to_string(path).map_err(|_| {
-        anyhow::anyhow!("Cannot read configuration: use a readable UTF-8 YAML file")
-    })?;
-    // Parser errors can contain input values, including secrets. Never display them.
-    serde_yaml_ng::from_str(&text).map_err(|_| {
-        anyhow::anyhow!("Invalid configuration YAML: check required fields, names, and types")
-    })
-}
-
-fn validate_token(token: &Secret) -> Result<()> {
-    if token.expose().is_empty() || !token.expose().bytes().all(|b| b.is_ascii_graphic()) {
-        bail!("api_token must be nonempty printable ASCII without whitespace");
-    }
-    Ok(())
-}
-
-impl ServerConfig {
-    pub fn load(path: &Path) -> Result<Self> {
-        let mut config: Self = load(path)?;
-        validate_token(&config.api_token)?;
-        if config.port == 0 {
-            bail!("port must be between 1 and 65535");
-        }
-        if config.database.as_os_str().is_empty() || config.database == Path::new(":memory:") {
-            bail!("database must name a persistent SQLite file");
-        }
-        if let Some(pushover) = &config.pushover {
-            validate_pushover(pushover)?;
-        }
-        let delivery = &config.delivery;
-        if !(1..=20).contains(&delivery.max_attempts)
-            || !(1..=86400).contains(&delivery.retry_base_seconds)
-            || !(delivery.retry_base_seconds..=86400).contains(&delivery.retry_max_seconds)
-            || delivery.group_window_seconds > 86400
-        {
-            bail!(
-                "Invalid delivery limits: attempts 1–20, retry delays 1–86400, grouping 0–86400 seconds"
-            );
-        }
-        for (name, destination) in &config.destinations {
-            if name.is_empty()
-                || name.len() > 64
-                || !name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            {
-                bail!(
-                    "Destination names must contain 1–64 letters, digits, underscores, or hyphens"
-                );
-            }
-            if name == "pushover" && config.pushover.is_some() {
-                bail!("Destination name pushover is already in use");
-            }
-            match destination {
-                DestinationConfig::Pushover { config } => validate_pushover(config)?,
-                DestinationConfig::Webhook { url, bearer_token } => {
-                    let url = reqwest::Url::parse(url.expose())
-                        .map_err(|_| anyhow::anyhow!("Invalid webhook URL"))?;
-                    if !matches!(url.scheme(), "http" | "https")
-                        || url.host_str().is_none()
-                        || !url.username().is_empty()
-                        || url.password().is_some()
-                        || url.fragment().is_some()
-                    {
-                        bail!(
-                            "Webhook URL must be HTTP or HTTPS without credentials or a fragment"
-                        );
-                    }
-                    if let Some(token) = bearer_token {
-                        validate_token(token)?;
-                    }
-                }
-            }
-        }
-        if config.default_destinations.is_empty() && config.pushover.is_some() {
-            config.default_destinations.push("pushover".into());
-        }
-        for names in std::iter::once(&config.default_destinations).chain(config.routes.values()) {
-            let mut seen = std::collections::BTreeSet::new();
-            for name in names {
-                if !(config.destinations.contains_key(name)
-                    || (name == "pushover" && config.pushover.is_some()))
-                {
-                    bail!("Routing references an unknown destination");
-                }
-                if !seen.insert(name) {
-                    bail!("Routing contains a duplicate destination");
-                }
-            }
-        }
-        if config.database.is_relative() {
-            let directory = path
-                .canonicalize()
-                .map_err(|_| anyhow::anyhow!("Cannot resolve configuration directory"))?;
-            config.database = directory
-                .parent()
-                .expect("file has parent")
-                .join(&config.database);
-        }
-        Ok(config)
-    }
-}
-
-impl ClientConfig {
-    pub fn load(path: &Path) -> Result<Self> {
-        let config: Self = load(path)?;
-        validate_token(&config.api_token)?;
-        let url = reqwest::Url::parse(&config.base_url)
-            .map_err(|_| anyhow::anyhow!("base_url must be an HTTP or HTTPS URL"))?;
-        if !matches!(url.scheme(), "http" | "https")
-            || url.host_str().is_none()
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
-            bail!("base_url must be HTTP or HTTPS without credentials, a query, or a fragment");
-        }
-        if !config.timeout.is_finite() || config.timeout <= 0.0 || config.timeout > 86400.0 {
-            bail!("timeout must be greater than zero and at most 86400 seconds");
-        }
-        Ok(config)
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct DeliveryConfig {
-    pub max_attempts: u32,
-    pub retry_base_seconds: u64,
-    pub retry_max_seconds: u64,
-    pub rate_limit_per_minute: u32,
-    pub group_window_seconds: u64,
-}
-impl Default for DeliveryConfig {
-    fn default() -> Self {
-        Self {
-            max_attempts: 1,
-            retry_base_seconds: 10,
-            retry_max_seconds: 3600,
-            rate_limit_per_minute: 120,
-            group_window_seconds: 30,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub enum DestinationConfig {
     Pushover {
         config: PushoverConfig,
@@ -237,23 +92,279 @@ pub enum DestinationConfig {
     },
 }
 
-fn validate_pushover(pushover: &PushoverConfig) -> Result<()> {
-    for (name, key) in [
-        ("app_token", &pushover.app_token),
-        ("user_key", &pushover.user_key),
-    ] {
-        if key.expose().len() != 30 || !key.expose().bytes().all(|b| b.is_ascii_alphanumeric()) {
-            bail!("pushover.{name} must be a 30-character alphanumeric key");
+#[derive(Debug, Clone)]
+pub struct DeliveryConfig {
+    pub max_attempts: u32,
+    pub retry_base_seconds: u64,
+    pub retry_max_seconds: u64,
+    // Retained internally for existing consumers; the rate window is configurable.
+    pub rate_limit_per_minute: u32,
+    pub rate_window_seconds: u64,
+    pub group_window_seconds: u64,
+    pub queue_limit: u64,
+}
+impl Default for DeliveryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: 1,
+            retry_base_seconds: 10,
+            retry_max_seconds: 3600,
+            rate_limit_per_minute: 120,
+            rate_window_seconds: 60,
+            group_window_seconds: 30,
+            queue_limit: 10_000,
         }
     }
-    if pushover.device.as_ref().is_some_and(|device| {
-        device.is_empty()
-            || device.len() > 25
-            || !device
+}
+#[derive(Debug, Default, Clone)]
+pub struct RetentionConfig {
+    pub deliveries: Option<u64>,
+    pub idempotency_keys: Option<u64>,
+}
+#[derive(Debug, Clone)]
+pub struct RateLimit {
+    pub attempts: u32,
+    pub window_seconds: u64,
+}
+#[derive(Debug, Clone)]
+pub struct DestinationPolicy {
+    pub max_attempts: u32,
+    pub retry_base_seconds: u64,
+    pub retry_max_seconds: u64,
+    pub rate_limit: Option<RateLimit>,
+}
+impl From<&DeliveryConfig> for DestinationPolicy {
+    fn from(value: &DeliveryConfig) -> Self {
+        Self {
+            max_attempts: value.max_attempts,
+            retry_base_seconds: value.retry_base_seconds,
+            retry_max_seconds: value.retry_max_seconds,
+            rate_limit: None,
+        }
+    }
+}
+fn validate_retry(attempts: u32, base: u64, max: u64, field: &str) -> Result<()> {
+    if !(1..=20).contains(&attempts) {
+        bail!("{field}.max_attempts: must be between 1 and 20");
+    }
+    if !(1..=86400).contains(&base) {
+        bail!("{field}.base_delay: must be between 1s and 1d");
+    }
+    if max < base {
+        bail!("{field}.max_delay: must be at least base_delay");
+    }
+    if max > 86400 {
+        bail!("{field}.max_delay: must be at most 1d");
+    }
+    Ok(())
+}
+fn validate_rate(window: u64, field: &str) -> Result<()> {
+    if !(1..=86400).contains(&window) {
+        bail!("{field}.window: must be between 1s and 1d");
+    }
+    Ok(())
+}
+fn token(secret: &Secret, field: &str) -> Result<()> {
+    if secret.expose().is_empty() || !secret.expose().bytes().all(|b| b.is_ascii_graphic()) {
+        bail!("{field}: must be nonempty printable ASCII without whitespace");
+    }
+    Ok(())
+}
+fn name_valid(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+fn validate_pushover(config: &mut PushoverConfig, directory: &Path, field: &str) -> Result<()> {
+    for (name, secret) in [
+        ("app_token", &mut config.app_token),
+        ("user_key", &mut config.user_key),
+    ] {
+        let field = format!("{field}.{name}");
+        secret.resolve(directory, &field)?;
+        if secret.expose().len() != 30
+            || !secret.expose().bytes().all(|b| b.is_ascii_alphanumeric())
+        {
+            bail!("{field}: must contain 30 ASCII letters or digits");
+        }
+    }
+    if config.device.as_ref().is_some_and(|s| {
+        s.is_empty()
+            || s.len() > 25
+            || !s
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     }) {
-        bail!("pushover.device must contain 1–25 letters, digits, underscores, or hyphens");
+        bail!("{field}.device: must contain 1–25 letters, digits, underscores, or hyphens");
     }
     Ok(())
+}
+fn directory(path: &Path) -> Result<PathBuf> {
+    Ok(path
+        .canonicalize()
+        .map_err(|_| anyhow::anyhow!("configuration: cannot resolve file directory"))?
+        .parent()
+        .expect("file has parent")
+        .to_owned())
+}
+impl ServerConfig {
+    pub fn load(path: &Path) -> Result<Self> {
+        let mut config = file::server(path)?;
+        let directory = directory(path)?;
+        if config.port == 0 {
+            bail!("server.listen: port must be between 1 and 65535");
+        }
+        if config.database.as_os_str().is_empty() || config.database == Path::new(":memory:") {
+            bail!("storage.database: must name a persistent SQLite file");
+        }
+        if config.database.is_relative() {
+            config.database = directory.join(&config.database);
+        }
+        config.api_token.resolve(&directory, "server.api_token")?;
+        token(&config.api_token, "server.api_token")?;
+        let d = &config.delivery;
+        validate_retry(
+            d.max_attempts,
+            d.retry_base_seconds,
+            d.retry_max_seconds,
+            "delivery.retry",
+        )?;
+        validate_rate(d.rate_window_seconds, "delivery.rate_limit")?;
+        if d.group_window_seconds > 86400 {
+            bail!("delivery.group_window: must be between 0s and 1d");
+        }
+        if d.queue_limit > i64::MAX as u64 {
+            bail!("delivery.queue_limit: exceeds the supported maximum");
+        }
+        for (field, value) in [
+            ("deliveries", config.retention.deliveries),
+            ("idempotency_keys", config.retention.idempotency_keys),
+        ] {
+            if value.is_some_and(|v| v == 0 || v > 315_360_000) {
+                bail!("storage.retention.{field}: must be null or between 1s and 3650d");
+            }
+        }
+        for (name, destination) in &mut config.destinations {
+            if !name_valid(name) {
+                bail!(
+                    "destinations: names must contain 1–64 ASCII letters, digits, underscores, or hyphens"
+                );
+            }
+            let field = format!("destinations.{name}");
+            match destination {
+                DestinationConfig::Pushover { config } => {
+                    validate_pushover(config, &directory, &field)?
+                }
+                DestinationConfig::Webhook { url, bearer_token } => {
+                    url.resolve(&directory, &format!("{field}.url"))?;
+                    let parsed = reqwest::Url::parse(url.expose())
+                        .map_err(|_| anyhow::anyhow!("{field}.url: invalid webhook URL"))?;
+                    if !matches!(parsed.scheme(), "http" | "https")
+                        || parsed.host_str().is_none()
+                        || !parsed.username().is_empty()
+                        || parsed.password().is_some()
+                        || parsed.fragment().is_some()
+                    {
+                        bail!("{field}.url: must be HTTP(S) without credentials or a fragment");
+                    }
+                    if let Some(secret) = bearer_token {
+                        secret.resolve(&directory, &format!("{field}.bearer_token"))?;
+                        token(secret, &format!("{field}.bearer_token"))?;
+                    }
+                }
+            }
+            if let Some(policy) = config.destination_policies.get(name) {
+                validate_retry(
+                    policy.max_attempts,
+                    policy.retry_base_seconds,
+                    policy.retry_max_seconds,
+                    &format!("{field}.delivery.retry"),
+                )?;
+                if let Some(rate) = &policy.rate_limit {
+                    validate_rate(rate.window_seconds, &format!("{field}.delivery.rate_limit"))?;
+                }
+            }
+        }
+        for (field, names) in
+            std::iter::once(("routing.default".to_owned(), &config.default_destinations)).chain(
+                config.routes.iter().map(|(severity, names)| {
+                    (
+                        format!(
+                            "routing.severity.{}",
+                            serde_json::to_value(severity).unwrap().as_str().unwrap()
+                        ),
+                        names,
+                    )
+                }),
+            )
+        {
+            let mut seen = BTreeSet::new();
+            for name in names {
+                if !config.destinations.contains_key(name) {
+                    bail!("{field}: references an unknown destination");
+                }
+                if !seen.insert(name) {
+                    bail!("{field}: contains a duplicate destination");
+                }
+            }
+        }
+        Ok(config)
+    }
+    /// Canonical effective configuration. All secrets, including webhook URLs, are redacted.
+    pub fn effective(&self) -> serde_json::Value {
+        use serde_json::json;
+        let d = &self.delivery;
+        let mut destinations = serde_json::Map::new();
+        for (name, destination) in &self.destinations {
+            let mut value = match destination {
+                DestinationConfig::Pushover { config } => {
+                    json!({"type":"pushover","app_token":config.app_token,"user_key":config.user_key,"device":config.device})
+                }
+                DestinationConfig::Webhook { url, bearer_token } => {
+                    json!({"type":"webhook","url":url,"bearer_token":bearer_token})
+                }
+            };
+            let policy = self
+                .destination_policies
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| DestinationPolicy::from(d));
+            value["delivery"] = json!({"retry":retry_value(policy.max_attempts,policy.retry_base_seconds,policy.retry_max_seconds),"rate_limit":policy.rate_limit.map(|r|json!({"attempts":r.attempts,"window":format!("{}s",r.window_seconds)}))});
+            destinations.insert(name.clone(), value);
+        }
+        json!({"server":{"listen":std::net::SocketAddr::new(self.host,self.port).to_string(),"api_token":self.api_token},
+            "storage":{"database":self.database,"retention":{"deliveries":self.retention.deliveries.map(|v|format!("{v}s")),"idempotency_keys":self.retention.idempotency_keys.map(|v|format!("{v}s"))}},
+            "delivery":{"retry":retry_value(d.max_attempts,d.retry_base_seconds,d.retry_max_seconds),"rate_limit":{"attempts":d.rate_limit_per_minute,"window":format!("{}s",d.rate_window_seconds)},"group_window":format!("{}s",d.group_window_seconds),"queue_limit":d.queue_limit},
+            "destinations":destinations,"routing":{"default":self.default_destinations,"severity":self.routes}})
+    }
+}
+fn retry_value(attempts: u32, base: u64, max: u64) -> serde_json::Value {
+    serde_json::json!({"max_attempts":attempts,"base_delay":format!("{base}s"),"max_delay":format!("{max}s")})
+}
+impl ClientConfig {
+    pub fn load(path: &Path) -> Result<Self> {
+        let mut config = file::client(path)?;
+        config.api_token.resolve(&directory(path)?, "api_token")?;
+        token(&config.api_token, "api_token")?;
+        let url = reqwest::Url::parse(&config.base_url)
+            .map_err(|_| anyhow::anyhow!("base_url: invalid HTTP(S) URL"))?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            bail!("base_url: must be HTTP(S) without credentials, query, or fragment");
+        }
+        if !config.timeout.is_finite() || config.timeout <= 0.0 || config.timeout > 86400.0 {
+            bail!("timeout: must be greater than 0s and at most 1d");
+        }
+        Ok(config)
+    }
+    pub fn effective(&self) -> serde_json::Value {
+        serde_json::json!({"base_url":self.base_url,"api_token":self.api_token,"timeout":self.timeout})
+    }
 }

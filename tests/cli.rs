@@ -429,7 +429,7 @@ async fn configured_server_retries_webhooks_and_monitors_heartbeats() {
     let provider = tokio::spawn(async move { axum::serve(listener, webhook).await.unwrap() });
     let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = reservation.local_addr().unwrap().port();
-    std::fs::write(dir.path().join("server.yaml"),format!("api_token: token\nport: {port}\ndelivery:\n  max_attempts: 2\n  retry_base_seconds: 1\ndestinations:\n  local:\n    type: webhook\n    url: http://{destination}/\ndefault_destinations: [local]\n")).unwrap();
+    std::fs::write(dir.path().join("server.yaml"),format!("server:\n  api_token: token\n  listen: 127.0.0.1:{port}\ndestinations:\n  local:\n    type: webhook\n    url: http://{destination}/\n    delivery:\n      retry:\n        max_attempts: 2\n        base_delay: 1s\nrouting:\n  default: [local]\n")).unwrap();
     std::fs::write(
         dir.path().join("client.yaml"),
         format!("api_token: token\nbase_url: http://127.0.0.1:{port}\n"),
@@ -562,4 +562,51 @@ async fn configured_server_retries_webhooks_and_monitors_heartbeats() {
     .unwrap();
     drop(child);
     provider.abort();
+}
+
+#[test]
+fn config_commands_validate_and_redact_without_opening_storage_or_network() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("server.yaml"),"server:\n  api_token: {env: FLARE_TEST_CONFIG_TOKEN}\nstorage:\n  database: absent/database.sqlite3\ndestinations:\n  local:\n    type: webhook\n    url: http://127.0.0.1:1/secret-url\nrouting:\n  default: [local]\n").unwrap();
+    for command in ["check", "show"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_flare"))
+            .current_dir(dir.path())
+            .env("FLARE_TEST_CONFIG_TOKEN", "environment-secret")
+            .args(["config", command, "--json"])
+            .output()
+            .unwrap();
+        let value = result(output, 0);
+        if command == "check" {
+            assert_eq!(value["valid"], true);
+        } else {
+            assert_eq!(value["server"]["api_token"], "[REDACTED]");
+            assert_eq!(value["routing"]["default"], json!(["local"]));
+        }
+        assert!(!value.to_string().contains("environment-secret"));
+        assert!(!value.to_string().contains("secret-url"));
+        assert!(!dir.path().join("absent").exists());
+    }
+    let failed = Command::new(env!("CARGO_BIN_EXE_flare"))
+        .current_dir(dir.path())
+        .env_remove("FLARE_TEST_CONFIG_TOKEN")
+        .args(["config", "check", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        result(failed, 1)["error"]
+            .as_str()
+            .unwrap()
+            .contains("server.api_token")
+    );
+    std::fs::write(
+        dir.path().join("client.yaml"),
+        "api_token: token\ntimeout: 30s\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_flare"))
+        .current_dir(dir.path())
+        .args(["config", "check", "--client", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(result(output, 0)["valid"], true);
 }

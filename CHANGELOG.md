@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add structured server/storage/delivery/routing YAML, duration strings, and environment/file secret references, with legacy compatibility.
+- Add `flare config check` and redacted `flare config show`, including client configuration support.
+- Respect explicit empty routing defaults; normalize legacy Pushover into a named destination.
+- Add independent destination retry/rate policies, a configurable active queue limit, and opt-in delivery/key retention.
+
 - Bash `flare_open_issue` and `flare_alert` now accept text arguments and named options instead of JSON bodies.
 
 - Add independent Rust, Python (sync and async), and Bash clients for all Flare API operations.

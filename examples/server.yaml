@@ -1,30 +1,51 @@
-# Copy to server.yaml and replace the shared API token.
-host: 127.0.0.1
-port: 8000
-database: flare.sqlite3
-api_token: replace-with-a-long-random-shared-token
-# Optional: uncomment to enable Pushover notifications and supply both keys.
-# pushover:
-#   app_token: replace-with-your-30-char-token
-#   user_key: replace-with-your-30-char-key
-#   device: phone
+# Copy to server.yaml. Run: flare config check --config server.yaml
+server:
+  listen: 127.0.0.1:8000
+  api_token: replace-with-a-long-random-shared-token
+  # api_token: {env: FLARE_API_TOKEN}
+  # api_token: {file: /run/secrets/flare-api-token}
 
-# Durable delivery; set max_attempts above 1 to retry failed destinations.
+storage:
+  database: flare.sqlite3  # relative to this configuration file
+  retention:
+    deliveries: null       # keep completed delivery history indefinitely
+    idempotency_keys: null # keys pin delivery records until they expire
+    # deliveries: 30d
+    # idempotency_keys: 90d
+
 delivery:
-  max_attempts: 3
-  retry_base_seconds: 10
-  retry_max_seconds: 3600
-  rate_limit_per_minute: 120
-  group_window_seconds: 30
+  retry:
+    max_attempts: 1        # includes the initial attempt; use 3 to enable retries
+    base_delay: 10s
+    max_delay: 1h
+  rate_limit:
+    attempts: 120         # destination attempts across the entire service; 0 disables
+    window: 1m
+  group_window: 30s       # used only for alerts with a group_key; 0s disables
+  queue_limit: 10000      # queued and running deliveries; 0 disables the limit
 
-# Optional additional destinations and routes. Without a matching route,
-# default_destinations is used (or top-level pushover when configured).
+destinations: {}
 # destinations:
+#   phone:
+#     type: pushover
+#     app_token: {env: PUSHOVER_APP_TOKEN}
+#     user_key: {file: /run/secrets/pushover-user-key}
+#     device: phone
 #   audit:
 #     type: webhook
 #     url: https://hooks.example.com/flare
-#     bearer_token: replace-with-webhook-token
-# default_destinations: [audit]
-# routes:
-#   info: [audit]
-#   critical: [audit, pushover]  # requires top-level pushover to be configured
+#     bearer_token: {env: WEBHOOK_TOKEN}
+#     delivery:
+#       retry:
+#         max_attempts: 3
+#       rate_limit:        # additional destination limit; global limit still applies
+#         attempts: 20
+#         window: 1m
+
+routing:
+  default: []             # explicitly disabled until destinations are configured
+  severity: {}
+  # default: [audit]
+  # severity:
+  #   critical: [audit, phone]
+  #   info: []            # explicitly suppress info notifications
