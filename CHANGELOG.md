@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Upgrade rusqlite to 0.40.2, retaining bundled SQLite and enabling checked unsigned integer conversions for counts and rate windows.
+
 - Remove legacy YAML aliases, top-level Pushover, nested Pushover `config`, and numeric duration compatibility. Server configuration requires `server`; all YAML durations require unit strings such as `15s`.
 
 - Rename the project and binary to `flares`, crates to `flares-client`/`flares-types`, Python imports to `flares_client`, and Bash functions/environment variables to `flares_*`/`FLARES_*`.
