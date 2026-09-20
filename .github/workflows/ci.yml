@@ -63,12 +63,6 @@ jobs:
       - name: Build release artifacts
         if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         run: uv run --project clients/python python scripts/build_artifacts.py
-      - name: Checksum release artifacts
-        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
-        run: |
-          cd dist
-          sha256sum -- * > SHA256SUMS
-          cat SHA256SUMS
       - uses: actions/upload-artifact@v7
         if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         with:

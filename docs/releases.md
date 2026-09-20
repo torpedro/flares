@@ -99,15 +99,18 @@ download its `flares-linux-x86_64-and-clients` artifact into `dist/`. It contain
 the Linux x86_64 server/CLI binary archive, both Rust library crates, the Python
 wheel and source distribution, and the Bash archive.
 
-Alternatively, build from the clean release commit locally:
+Alternatively, build from the clean release commit locally, starting from an empty
+`dist/` so stale artifacts cannot reach `SHA256SUMS`:
 
 ```bash
+rm -rf dist
 uv run --project clients/python python scripts/build_artifacts.py
 ```
 
-The local binary targets the build machine; it is not a universal executable. The CI
-binary is built on `ubuntu-latest` and is not a static Linux binary. Use the
-appropriate platform label in the GitHub Release.
+The local binary targets the build machine; it is not a universal executable, and the
+archive is named for that machine (`flares-0.1.0-linux-x86_64.tar.gz` on Linux x86_64).
+The CI binary is built on `ubuntu-latest` and is not a static Linux binary. Publish
+only an archive whose platform label matches the machine that produced it.
 
 ## 4. Publish
 
@@ -151,17 +154,13 @@ Check the tag name against the workspace version before pushing. `check_versions
 asserts that they agree, but only on tag runs, so that check now lands after
 publication rather than before it.
 
-Give the binary download a platform-specific name and create checksums. These
-commands assume you are at the repository root:
+`build_artifacts.py` already named the binary archive for the machine that built it
+and wrote `dist/SHA256SUMS` covering every artifact beside it, so nothing needs
+renaming or hashing here. Confirm the six artifacts and their checksums:
 
 ```bash
-cp dist/flares-0.1.0.tar.gz dist/flares-0.1.0-linux-x86_64.tar.gz
-(
-  cd dist
-  sha256sum flares-0.1.0-linux-x86_64.tar.gz flares-bash-0.1.0.tar.gz \
-    flares-types-0.1.0.crate flares-client-0.1.0.crate \
-    flares_client-0.1.0-py3-none-any.whl flares_client-0.1.0.tar.gz > SHA256SUMS
-)
+cat dist/SHA256SUMS
+(cd dist && sha256sum --check SHA256SUMS)
 ```
 
 On GitHub, create a draft release for existing tag `v0.1.0`, title it
