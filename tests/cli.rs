@@ -29,6 +29,7 @@ fn config_lookup_uses_home_and_explicit_override_instead_of_working_directory() 
         Command::new(env!("CARGO_BIN_EXE_flares"))
             .current_dir(dir.path())
             .env("HOME", &home)
+            .env_remove("XDG_CONFIG_HOME")
             .args(args)
             .output()
             .unwrap()
@@ -54,6 +55,53 @@ fn config_lookup_uses_home_and_explicit_override_instead_of_working_directory() 
     // An invalid user file must not be skipped in favor of a system file.
     std::fs::write(configs.join("server.yaml"), "invalid: [").unwrap();
     assert!(result(run(&["config", "check", "--json"]), 1)["error"].is_string());
+}
+
+#[test]
+fn config_lookup_uses_xdg_and_explicit_paths_for_both_schemas() {
+    let dir = tempfile::tempdir().unwrap();
+    let configs = dir.path().join("xdg/flares");
+    std::fs::create_dir_all(&configs).unwrap();
+    std::fs::write(configs.join("token"), "config-directory-token\n").unwrap();
+    std::fs::write(dir.path().join("token"), "invalid working-directory token").unwrap();
+    for (name, yaml) in [
+        ("server.yaml", "server: {api_token: {file: token}}\n"),
+        ("client.yaml", "api_token: {file: token}\ntimeout: 2m\n"),
+    ] {
+        std::fs::write(configs.join(name), yaml).unwrap();
+        let run = |extra: &[&str]| {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_flares"));
+            command
+                .current_dir(dir.path())
+                .env("XDG_CONFIG_HOME", configs.parent().unwrap())
+                .env_remove("HOME")
+                .args(["config", "show", "--json"]);
+            if name == "client.yaml" {
+                command.arg("--client");
+            }
+            command.args(extra).output().unwrap()
+        };
+        let value = result(run(&[]), 0);
+        if name == "server.yaml" {
+            assert_eq!(
+                value["storage"]["database"],
+                json!(configs.join("flares.sqlite3"))
+            );
+        } else {
+            assert_eq!(value["timeout"], 120.0);
+        }
+        assert!(!value.to_string().contains("config-directory-token"));
+        let relative = format!("xdg/flares/{name}");
+        assert_eq!(result(run(&["--config", &relative]), 0), value);
+        assert!(result(run(&["--config", "missing.yaml"]), 1)["error"].is_string());
+        std::fs::write(configs.join(name), "invalid: [").unwrap();
+        assert!(
+            result(run(&[]), 1)["error"]
+                .as_str()
+                .unwrap()
+                .contains(name)
+        );
+    }
 }
 
 struct FakeNotifier;

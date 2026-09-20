@@ -1,6 +1,8 @@
 #![doc = include_str!("../README.md")]
 
-use std::time::Duration;
+use std::{path::Path, time::Duration};
+
+pub mod config;
 
 use reqwest::{Client, RequestBuilder, Url};
 use serde::de::DeserializeOwned;
@@ -15,6 +17,24 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
+    /// Load one client YAML file. Relative secret paths use its canonical directory.
+    pub fn from_config(path: impl AsRef<Path>) -> Result<Self, Error> {
+        let config = config::ClientConfig::load(path.as_ref())
+            .map_err(|error| Error::Configuration(error.to_string()))?;
+        Self::with_timeout(
+            config.base_url,
+            config.api_token.expose(),
+            Duration::from_secs_f64(config.timeout),
+        )
+    }
+
+    /// Opt into XDG/HOME, then system client.yaml discovery.
+    pub fn from_default_config() -> Result<Self, Error> {
+        let path = config::default_path("client.yaml")
+            .map_err(|error| Error::Configuration(error.to_string()))?;
+        Self::from_config(path)
+    }
+
     pub fn new(base_url: impl Into<String>, token: impl Into<String>) -> Result<Self, Error> {
         Self::with_timeout(base_url, token, Duration::from_secs(15))
     }
@@ -184,6 +204,8 @@ impl ApiClient {
 /// Errors never include credentials, request URLs, or untrusted response bodies.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("{0}")]
+    Configuration(String),
     #[error("{0}")]
     Validation(&'static str),
     #[error(

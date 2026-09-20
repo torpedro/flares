@@ -1,0 +1,350 @@
+[
+  {
+    "id": "defaults",
+    "yaml": "api_token: test-token\n",
+    "expected": {
+      "token": "test-token",
+      "timeout": 15,
+      "base_url": "http://127.0.0.1:8000"
+    }
+  },
+  {
+    "id": "explicit",
+    "yaml": "base_url: https://example.com/api\napi_token: test-token\ntimeout: 2m\n",
+    "expected": {
+      "token": "test-token",
+      "timeout": 120,
+      "base_url": "https://example.com/api"
+    }
+  },
+  {
+    "id": "file",
+    "yaml": "api_token: {file: token}\ntimeout: 1d\n",
+    "expected": {
+      "token": "test-token",
+      "timeout": 86400,
+      "base_url": "http://127.0.0.1:8000"
+    }
+  },
+  {
+    "id": "parent_file",
+    "yaml": "api_token: {file: ../token}\n",
+    "expected": {
+      "token": "test-token",
+      "timeout": 15,
+      "base_url": "http://127.0.0.1:8000"
+    }
+  },
+  {
+    "id": "null_defaults",
+    "yaml": "api_token: test-token\nbase_url: null\ntimeout: null\n",
+    "expected": {
+      "token": "test-token",
+      "timeout": 15,
+      "base_url": "http://127.0.0.1:8000"
+    }
+  },
+  {
+    "id": "yaml12_yes",
+    "yaml": "api_token: yes\n",
+    "expected": {
+      "token": "yes",
+      "timeout": 15,
+      "base_url": "http://127.0.0.1:8000"
+    }
+  },
+  {
+    "id": "yaml12_on",
+    "yaml": "api_token: on\n",
+    "expected": {
+      "token": "on",
+      "timeout": 15,
+      "base_url": "http://127.0.0.1:8000"
+    }
+  },
+  {
+    "id": "quoted_numeric",
+    "yaml": "api_token: \"12345\"\n",
+    "expected": {
+      "token": "12345",
+      "timeout": 15,
+      "base_url": "http://127.0.0.1:8000"
+    }
+  },
+  {
+    "id": "quoted_boolean",
+    "yaml": "api_token: \"true\"\n",
+    "expected": {
+      "token": "true",
+      "timeout": 15,
+      "base_url": "http://127.0.0.1:8000"
+    }
+  },
+  {
+    "id": "leading_zero_duration",
+    "yaml": "api_token: test-token\ntimeout: 00001s\n",
+    "expected": {
+      "token": "test-token",
+      "timeout": 1,
+      "base_url": "http://127.0.0.1:8000"
+    }
+  },
+  {
+    "id": "missing_token",
+    "yaml": "base_url: http://localhost\n",
+    "error": "configuration"
+  },
+  {
+    "id": "empty",
+    "yaml": "",
+    "error": "configuration"
+  },
+  {
+    "id": "unknown",
+    "yaml": "api_token: test-token\nunknown: sensitive-value\n",
+    "error": "configuration"
+  },
+  {
+    "id": "duplicate",
+    "yaml": "api_token: sensitive-first\napi_token: sensitive-second\n",
+    "error": "api_token"
+  },
+  {
+    "id": "numeric_token",
+    "yaml": "api_token: 12345\n",
+    "error": "api_token"
+  },
+  {
+    "id": "bool_token",
+    "yaml": "api_token: true\n",
+    "error": "api_token"
+  },
+  {
+    "id": "empty_token",
+    "yaml": "api_token: \"\"\n",
+    "error": "api_token"
+  },
+  {
+    "id": "space_token",
+    "yaml": "api_token: \"sensitive value\"\n",
+    "error": "api_token"
+  },
+  {
+    "id": "non_ascii_token",
+    "yaml": "api_token: s\u00e9cret\n",
+    "error": "api_token"
+  },
+  {
+    "id": "null_token",
+    "yaml": "api_token: null\n",
+    "error": "api_token"
+  },
+  {
+    "id": "bad_reference",
+    "yaml": "api_token: {file: token, env: HOME}\n",
+    "error": "api_token"
+  },
+  {
+    "id": "unknown_reference",
+    "yaml": "api_token: {secret: sensitive-value}\n",
+    "error": "api_token"
+  },
+  {
+    "id": "missing_file",
+    "yaml": "api_token: {file: sensitive-missing-file}\n",
+    "error": "api_token"
+  },
+  {
+    "id": "missing_env",
+    "yaml": "api_token: {env: FLARES_MISSING_CONFIG_CONTRACT_VARIABLE}\n",
+    "error": "api_token"
+  },
+  {
+    "id": "empty_reference",
+    "yaml": "api_token: {}\n",
+    "error": "api_token"
+  },
+  {
+    "id": "duration_numeric",
+    "yaml": "api_token: test-token\ntimeout: 15\n",
+    "error": "timeout"
+  },
+  {
+    "id": "duration_unitless",
+    "yaml": "api_token: test-token\ntimeout: \"15\"\n",
+    "error": "timeout"
+  },
+  {
+    "id": "duration_fractional",
+    "yaml": "api_token: test-token\ntimeout: 0.5s\n",
+    "error": "timeout"
+  },
+  {
+    "id": "duration_negative",
+    "yaml": "api_token: test-token\ntimeout: -1s\n",
+    "error": "timeout"
+  },
+  {
+    "id": "duration_zero",
+    "yaml": "api_token: test-token\ntimeout: 0s\n",
+    "error": "timeout"
+  },
+  {
+    "id": "duration_too_long",
+    "yaml": "api_token: test-token\ntimeout: 2d\n",
+    "error": "timeout"
+  },
+  {
+    "id": "duration_overflow",
+    "yaml": "api_token: test-token\ntimeout: 18446744073709551616s\n",
+    "error": "timeout"
+  },
+  {
+    "id": "duration_invalid_unit",
+    "yaml": "api_token: test-token\ntimeout: 1ms\n",
+    "error": "timeout"
+  },
+  {
+    "id": "url_scheme",
+    "yaml": "api_token: test-token\nbase_url: ftp://example.com\n",
+    "error": "base_url"
+  },
+  {
+    "id": "url_credentials",
+    "yaml": "api_token: test-token\nbase_url: https://user:sensitive-value@example.com\n",
+    "error": "base_url"
+  },
+  {
+    "id": "url_query",
+    "yaml": "api_token: test-token\nbase_url: https://example.com?secret=sensitive-value\n",
+    "error": "base_url"
+  },
+  {
+    "id": "url_fragment",
+    "yaml": "api_token: test-token\nbase_url: https://example.com#sensitive-value\n",
+    "error": "base_url"
+  },
+  {
+    "id": "url_empty_query",
+    "yaml": "api_token: test-token\nbase_url: https://example.com?\n",
+    "error": "base_url"
+  },
+  {
+    "id": "url_empty_fragment",
+    "yaml": "api_token: test-token\nbase_url: https://example.com#\n",
+    "error": "base_url"
+  },
+  {
+    "id": "url_missing_host",
+    "yaml": "api_token: test-token\nbase_url: http://\n",
+    "error": "base_url"
+  },
+  {
+    "id": "malformed",
+    "yaml": "api_token: [sensitive-value\n",
+    "error": "api_token"
+  },
+  {
+    "id": "multiple_documents",
+    "yaml": "api_token: test-token\n---\napi_token: sensitive-other\n",
+    "error": "configuration"
+  },
+  {
+    "id": "yaml12_string_0123",
+    "yaml": "api_token: 0123\n",
+    "expected": {
+      "token": "0123",
+      "timeout": 15,
+      "base_url": "http://127.0.0.1:8000"
+    }
+  },
+  {
+    "id": "yaml12_string_1_000",
+    "yaml": "api_token: 1_000\n",
+    "expected": {
+      "token": "1_000",
+      "timeout": 15,
+      "base_url": "http://127.0.0.1:8000"
+    }
+  },
+  {
+    "id": "yaml12_string_1:20",
+    "yaml": "api_token: 1:20\n",
+    "expected": {
+      "token": "1:20",
+      "timeout": 15,
+      "base_url": "http://127.0.0.1:8000"
+    }
+  },
+  {
+    "id": "yaml12_string_2026-01-01",
+    "yaml": "api_token: 2026-01-01\n",
+    "expected": {
+      "token": "2026-01-01",
+      "timeout": 15,
+      "base_url": "http://127.0.0.1:8000"
+    }
+  },
+  {
+    "id": "yaml12_string_1e999",
+    "yaml": "api_token: 1e999\n",
+    "expected": {
+      "token": "1e999",
+      "timeout": 15,
+      "base_url": "http://127.0.0.1:8000"
+    }
+  },
+  {
+    "id": "yaml12_string_=",
+    "yaml": "api_token: =\n",
+    "expected": {
+      "token": "=",
+      "timeout": 15,
+      "base_url": "http://127.0.0.1:8000"
+    }
+  },
+  {
+    "id": "yaml12_number_1e3",
+    "yaml": "api_token: 1e3\n",
+    "error": "api_token"
+  },
+  {
+    "id": "yaml12_number_0o123",
+    "yaml": "api_token: 0o123\n",
+    "error": "api_token"
+  },
+  {
+    "id": "yaml12_number_0x123",
+    "yaml": "api_token: 0x123\n",
+    "error": "api_token"
+  },
+  {
+    "id": "yaml12_number_0b101",
+    "yaml": "api_token: 0b101\n",
+    "error": "api_token"
+  },
+  {
+    "id": "yaml12_number_.inf",
+    "yaml": "api_token: .inf\n",
+    "error": "api_token"
+  },
+  {
+    "id": "yaml12_number_.nan",
+    "yaml": "api_token: .nan\n",
+    "error": "api_token"
+  },
+  {
+    "id": "yaml12_number_-123",
+    "yaml": "api_token: -123\n",
+    "error": "api_token"
+  },
+  {
+    "id": "many_leading_zeros_duration",
+    "yaml": "api_token: test-token\ntimeout: 000000000000000000000000001s\n",
+    "expected": {
+      "token": "test-token",
+      "timeout": 1,
+      "base_url": "http://127.0.0.1:8000"
+    }
+  }
+]

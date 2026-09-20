@@ -89,7 +89,7 @@ async fn main() {
         Ok(value) => json!({"value":value}),
         Err(error) => match error {
             Error::Http { status } => json!({"error":"http","status":status}),
-            Error::Validation(_) => json!({"error":"validation"}),
+            Error::Validation(_) | Error::Configuration(_) => json!({"error":"validation"}),
             Error::Transport => json!({"error":"transport"}),
             Error::Decode => json!({"error":"decode"}),
         },

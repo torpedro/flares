@@ -1,37 +1,8 @@
 //! Strict YAML schemas for the structured configuration format.
 use super::*;
-use serde::{Deserializer, de::DeserializeOwned};
+use flares_client::config::{Seconds, read};
 use std::net::SocketAddr;
 
-#[derive(Debug, Clone, Copy)]
-struct Seconds(u64);
-impl<'de> Deserialize<'de> for Seconds {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        let text = String::deserialize(deserializer)?;
-        let split = text
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(text.len());
-        let (number, unit) = text.split_at(split);
-        let multiplier = match unit {
-            "s" => 1,
-            "m" => 60,
-            "h" => 3600,
-            "d" => 86400,
-            "w" => 604800,
-            _ => {
-                return Err(serde::de::Error::custom(
-                    "expected duration with s, m, h, d, or w suffix",
-                ));
-            }
-        };
-        number
-            .parse::<u64>()
-            .ok()
-            .and_then(|n| n.checked_mul(multiplier))
-            .map(Self)
-            .ok_or_else(|| serde::de::Error::custom("invalid duration"))
-    }
-}
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Retry {
@@ -183,27 +154,6 @@ struct Server {
     destinations: BTreeMap<String, Destination>,
 }
 
-fn read<T: DeserializeOwned>(path: &Path) -> Result<T> {
-    let text = fs::read_to_string(path)
-        .map_err(|_| anyhow::anyhow!("configuration: cannot read UTF-8 YAML file"))?;
-    serde_path_to_error::deserialize(serde_yaml_ng::Deserializer::from_str(&text)).map_err(|error| {
-        // Never echo the parser's message: it may quote a credential or a full YAML value.
-        let mut parts=Vec::new();
-        for segment in error.path() {
-            match segment {
-                serde_path_to_error::Segment::Map {key}=> {
-                    parts.push(if name_valid(key) {key.clone()} else {"<field>".into()});
-                    if matches!(key.as_str(),"api_token"|"app_token"|"user_key"|"bearer_token"|"url") {break;}
-                }
-                serde_path_to_error::Segment::Seq {index}=>parts.push(format!("[{index}]")),
-                _=>{}
-            }
-        }
-        let field=if parts.is_empty() {"configuration".into()} else {parts.join(".")};
-        let location=error.inner().location().map(|l|format!(" at line {}, column {}",l.line(),l.column())).unwrap_or_default();
-        anyhow::anyhow!("{field}{location}: invalid configuration YAML; check field names, required fields, and value types")
-    })
-}
 pub(super) fn server(path: &Path) -> Result<ServerConfig> {
     let raw: Server = read(path)?;
     let Listener { listen, api_token } = raw.server;
@@ -259,22 +209,5 @@ pub(super) fn server(path: &Path) -> Result<ServerConfig> {
             idempotency_keys: storage.retention.idempotency_keys.map(|v| v.0),
         },
         destination_policies,
-    })
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Client {
-    base_url: Option<String>,
-    api_token: Secret,
-    timeout: Option<Seconds>,
-}
-pub(super) fn client(path: &Path) -> Result<ClientConfig> {
-    let raw: Client = read(path)?;
-    Ok(ClientConfig {
-        base_url: raw
-            .base_url
-            .unwrap_or_else(|| "http://127.0.0.1:8000".into()),
-        api_token: raw.api_token,
-        timeout: raw.timeout.map_or(15.0, |value| value.0 as f64),
     })
 }

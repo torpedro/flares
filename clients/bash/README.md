@@ -53,3 +53,11 @@ fi
 ```
 
 The library preserves caller options and traps, does not use `eval`, disables curl configuration-file loading, and does not retry or follow redirects. Token headers are passed through a private temporary file, cleaned up when the request ends. Reuse an explicit alert idempotency key after an uncertain outcome.
+
+For scripts that should read the shared `client.yaml`, use the Flares CLI:
+
+```sh
+flares --config /path/client.yaml alert --title Backup --message Done
+```
+
+Omit `--config` to use the [standard configuration discovery](../../docs/configuration.md#configuration-lookup). The Bash library itself does not parse YAML.

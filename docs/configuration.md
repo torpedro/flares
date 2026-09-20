@@ -1,21 +1,32 @@
 # Configuration
 
-The server and CLI read YAML files. SDK configuration is unchanged: clients accept URL, token, and timeout arguments directly. Start from [server.yaml](../examples/server.yaml) and [client.yaml](../examples/client.yaml).
+The server and CLI read YAML files. Rust and Python SDKs can explicitly load the same client YAML, or accept URL, token, and timeout arguments directly. Start from [server.yaml](../examples/server.yaml) and [client.yaml](../examples/client.yaml).
 
 ## Configuration lookup
 
 An explicit `--config PATH` always selects that file, including relative paths.
 Otherwise, Flares checks these locations in order:
 
-1. `$HOME/.config/flares/server.yaml` or `$HOME/.config/flares/client.yaml`.
+1. `$XDG_CONFIG_HOME/flares/server.yaml` or `client.yaml`, when `XDG_CONFIG_HOME` is an absolute path; otherwise `$HOME/.config/flares/server.yaml` or `client.yaml`.
 2. `/etc/flares/server.yaml` or `/etc/flares/client.yaml`.
+
+An unset, empty, or relative `XDG_CONFIG_HOME` falls back to `$HOME/.config`.
+When an absolute `XDG_CONFIG_HOME` is set, it replaces `$HOME/.config`; the latter
+is not searched as an additional location. If neither a usable XDG directory nor
+a nonempty `HOME` is available, only `/etc/flares` is checked.
 
 `serve` and server `config check/show` use `server.yaml`. Client commands and
 `config check/show --client` use `client.yaml`. The current directory is never
-searched automatically. If `HOME` is unset or empty, only `/etc/flares` is checked.
-Lookup falls back only when the user file is absent; invalid or unreadable files
-produce an error rather than silently selecting another configuration. If neither
-file exists, the error identifies the search locations and suggests `--config`.
+searched automatically. One file is selected, without merging. Lookup falls back
+only when a candidate is absent; invalid or unreadable files, directories, and
+broken symlinks produce an error rather than silently selecting another config.
+Missing-file errors list the locations searched. Explicit paths never fall back.
+
+Relative `--config` and SDK file arguments resolve against the working directory.
+Relative paths **inside** YAML (database and secret files) resolve against the
+selected file's canonical directory. For a symlinked config, this is the target's
+directory. Absolute paths remain absolute. There is no automatic environment
+variable override of settings; `{env: NAME}` is an explicit secret reference.
 
 Create the user directory with `mkdir -p ~/.config/flares`. For system installations,
 place configuration in `/etc/flares` and explicitly set `storage.database` to a
@@ -35,7 +46,47 @@ flares config show --client --config client.yaml
 
 `show` performs the same validation and prints effective settings, including defaults, resolved database paths, and inherited destination retry policies. Credentials and webhook URLs are always `[REDACTED]`. This is diagnostic output, not a deployable config containing credentials.
 
-Validation errors include a field path and a YAML line/column for parsing errors when available. Semantic errors identify the field and constraint, for example `delivery.retry.max_delay: must be at least base_delay`. Parser source excerpts and secret values are never printed. Unknown fields and legacy aliases are rejected.
+Loading errors identify the selected configuration file. Validation errors include a field path and a YAML line/column for parsing errors when available. Semantic errors identify the field and constraint, for example `delivery.retry.max_delay: must be at least base_delay`. Parser source excerpts and secret values are never printed. Unknown fields and legacy aliases are rejected.
+
+## SDK file loading
+
+The CLI, Rust SDK, and Python sync/async SDKs accept this same client format:
+
+```yaml
+base_url: http://127.0.0.1:8000
+api_token: {file: secrets/api-token}
+timeout: 15s
+```
+
+`api_token` is required and accepts a literal string, `{env: NAME}`, or `{file: PATH}`.
+Omitting `base_url` or `timeout` uses the defaults shown above. Unknown fields and
+duplicate fields are rejected. Loading reads files and referenced environment
+variables but makes no API requests.
+
+```rust,ignore
+let client = flares_client::ApiClient::from_config("/path/client.yaml")?;
+// Explicitly opt into the same discovery rules as the CLI:
+let client = flares_client::ApiClient::from_default_config()?;
+```
+
+```python
+from flares_client import Client, AsyncClient
+
+with Client.from_config("/path/client.yaml") as client:
+    result = client.health()
+
+async def health():
+    async with AsyncClient.from_default_config() as client:
+        return await client.health()
+```
+
+Both Python classes provide both constructors. `AsyncClient.from_config()` and
+`from_default_config()` are synchronous constructors; network operations remain
+async. Direct URL/token constructors never load config files or discover settings.
+Rust reports loading errors as `Error::Configuration`; Python uses `ValidationError`.
+
+The Bash library continues to accept shell variables. For YAML-based shell scripts,
+use the CLI, for example `flares --config /path/client.yaml alert --title Backup --message Done`.
 
 ## Server format
 

@@ -13,7 +13,7 @@ use flares::{
 #[derive(Parser)]
 #[command(version, about = "Track issues and send notifications")]
 struct Cli {
-    /// YAML file; otherwise search ~/.config/flares then /etc/flares for server.yaml or client.yaml.
+    /// YAML file; otherwise search $XDG_CONFIG_HOME/flares (or ~/.config/flares), then /etc/flares.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
     /// Print machine-readable JSON.

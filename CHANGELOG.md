@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add explicit YAML loading and default discovery to Rust and Python clients, using the same client format, secret references, and config-relative paths as the CLI.
+- Honor absolute `XDG_CONFIG_HOME` for server/client discovery, with HOME and system-directory fallbacks; include selected filenames in loading errors.
+
 ## 0.1.1 - 2026-09-20
 
 - Add `scripts/make_release.sh`, an interactive helper that bumps the version, updates the changelog, verifies packaging, and optionally commits, builds the release artifacts, publishes to crates.io and PyPI, tags, and pushes the tag.

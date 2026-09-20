@@ -71,7 +71,7 @@ flares heartbeat add nightly-backup --title 'Nightly backup' --interval-seconds 
 flares heartbeat beat nightly-backup
 ```
 
-Without `--config`, Flares looks in `~/.config/flares` first, then `/etc/flares`, using `server.yaml` for server/config commands and `client.yaml` for client commands (including `config --client`). The current directory is not searched. Use `--config /path/to/file.yaml` to override lookup. Add `--json` for structured output or `--help` for all commands. YAML durations require units such as `15s`.
+Without `--config`, Flares looks in `$XDG_CONFIG_HOME/flares` (when absolute), otherwise `~/.config/flares`, then `/etc/flares`, using `server.yaml` for server/config commands and `client.yaml` for client commands (including `config --client`). The current directory is not searched. Use `--config /path/to/file.yaml` to override lookup. Add `--json` for structured output or `--help` for all commands. YAML durations require units such as `15s`.
 
 Exit codes: **0** for success, no-op, or queued delivery; **1** for errors; **2** when a mutation was saved but notification delivery failed. Inspect queued deliveries with `flares delivery ID`.
 

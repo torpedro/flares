@@ -1,10 +1,12 @@
 """HTTP clients with identical synchronous and asynchronous operations."""
 
+from os import PathLike
 from typing import Any, Self
 
 import httpx
 
 from ._common import body, decode, delivery_path, key_header, listing, settings
+from ._config import default_path, load_config
 from .errors import TransportError
 from .models import (
     Alert,
@@ -24,6 +26,17 @@ from .models import (
 
 
 class Client:
+    @classmethod
+    def from_config(cls, path: str | PathLike[str]) -> Self:
+        """Read one YAML file, resolving secret files against its canonical directory."""
+        base_url, token, timeout = load_config(path)
+        return cls(base_url, token, timeout=timeout)
+
+    @classmethod
+    def from_default_config(cls) -> Self:
+        """Opt into XDG/HOME, then system client.yaml discovery."""
+        return cls.from_config(default_path())
+
     def __init__(self, base_url: str, token: str, *, timeout: float = 15.0):
         self._base_url, headers = settings(base_url, token, timeout)
         self._client = httpx.Client(headers=headers, timeout=timeout, follow_redirects=False)
@@ -146,6 +159,17 @@ class Client:
 
 
 class AsyncClient:
+    @classmethod
+    def from_config(cls, path: str | PathLike[str]) -> Self:
+        """Read one YAML file, resolving secret files against its canonical directory."""
+        base_url, token, timeout = load_config(path)
+        return cls(base_url, token, timeout=timeout)
+
+    @classmethod
+    def from_default_config(cls) -> Self:
+        """Opt into XDG/HOME, then system client.yaml discovery."""
+        return cls.from_config(default_path())
+
     def __init__(self, base_url: str, token: str, *, timeout: float = 15.0):
         self._base_url, headers = settings(base_url, token, timeout)
         self._client = httpx.AsyncClient(headers=headers, timeout=timeout, follow_redirects=False)
