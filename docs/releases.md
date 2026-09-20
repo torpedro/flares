@@ -139,10 +139,11 @@ which contains other package types and can contain stale builds.
 
 ## 5. Tag and announce
 
-After confirming publication on crates.io and PyPI, tag the published commit:
+`make_release.sh` offers the tag and its push at the end of a run. To do it by hand,
+after confirming publication on crates.io and PyPI, tag the published commit:
 
 ```bash
-git tag -a v0.1.0 -m "Flares 0.1.0"
+git tag -a v0.1.0 -m "flares 0.1.0"
 git push origin v0.1.0
 ```
 
@@ -164,7 +165,7 @@ cp dist/flares-0.1.0.tar.gz dist/flares-0.1.0-linux-x86_64.tar.gz
 ```
 
 On GitHub, create a draft release for existing tag `v0.1.0`, title it
-`Flares v0.1.0`, and attach those six files plus `SHA256SUMS`. Use this version's
+`flares v0.1.0`, and attach those six files plus `SHA256SUMS`. Use this version's
 changelog entries as its description, include installation commands and the binary's
 platform requirements, review the draft, then publish it.
 
