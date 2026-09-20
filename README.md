@@ -14,7 +14,7 @@ Alternatively, download a binary for your platform from [GitHub Releases](https:
 
 ## Run the server
 
-Save this as `server.yaml`:
+Create `~/.config/flares` with `mkdir -p ~/.config/flares`, then save this as `~/.config/flares/server.yaml`:
 
 ```yaml
 server:
@@ -28,11 +28,11 @@ Set a shared token, validate the configuration, and start the server:
 
 ```sh
 export FLARES_API_TOKEN='replace-with-a-long-random-token'
-flares config check --config server.yaml
-flares serve --config server.yaml
+flares config check
+flares serve
 ```
 
-To enable Pushover, add these sections to `server.yaml` and set the two credential environment variables before starting:
+To enable Pushover, add these sections to your server config and set the two credential environment variables before starting:
 
 ```yaml
 destinations:
@@ -50,7 +50,7 @@ See the [configuration guide](docs/configuration.md) for webhooks, routing, retr
 
 ## Use the CLI
 
-Save this as `client.yaml` and set `FLARES_API_TOKEN` to the same token in your client shell:
+Save this as `~/.config/flares/client.yaml` and set `FLARES_API_TOKEN` to the same token in your client shell:
 
 ```yaml
 base_url: http://127.0.0.1:8000
@@ -71,7 +71,7 @@ flares heartbeat add nightly-backup --title 'Nightly backup' --interval-seconds 
 flares heartbeat beat nightly-backup
 ```
 
-The CLI reads `client.yaml` in the current directory; use `--config /path/to/client.yaml` to override it. Add `--json` for structured output, or `--help` for all commands. YAML durations require units such as `15s`.
+Without `--config`, Flares looks in `~/.config/flares` first, then `/etc/flares`, using `server.yaml` for server/config commands and `client.yaml` for client commands (including `config --client`). The current directory is not searched. Use `--config /path/to/file.yaml` to override lookup. Add `--json` for structured output or `--help` for all commands. YAML durations require units such as `15s`.
 
 Exit codes: **0** for success, no-op, or queued delivery; **1** for errors; **2** when a mutation was saved but notification delivery failed. Inspect queued deliveries with `flares delivery ID`.
 

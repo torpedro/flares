@@ -9,6 +9,53 @@ use async_trait::async_trait;
 use flares::{api, models::Notification, notifications::Notifier, store::Store};
 use serde_json::{Value, json};
 
+#[test]
+fn config_lookup_uses_home_and_explicit_override_instead_of_working_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let configs = home.join(".config/flares");
+    std::fs::create_dir_all(&configs).unwrap();
+    std::fs::write(configs.join("server.yaml"), "server: {api_token: token}\n").unwrap();
+    std::fs::write(
+        configs.join("client.yaml"),
+        "api_token: token\ntimeout: 30s\n",
+    )
+    .unwrap();
+    // These files would fail parsing if the current directory were searched.
+    for name in ["server.yaml", "client.yaml"] {
+        std::fs::write(dir.path().join(name), "invalid: [").unwrap();
+    }
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_flares"))
+            .current_dir(dir.path())
+            .env("HOME", &home)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let server = result(run(&["config", "show", "--json"]), 0);
+    assert_eq!(server["server"]["listen"], "127.0.0.1:8000");
+    let client = result(run(&["config", "show", "--client", "--json"]), 0);
+    assert_eq!(client["timeout"], 30.0);
+    for args in [
+        vec!["config", "check", "--json", "--config", "server.yaml"],
+        vec![
+            "config",
+            "check",
+            "--client",
+            "--json",
+            "--config",
+            "client.yaml",
+        ],
+        vec!["config", "check", "--json", "--config", "missing.yaml"],
+    ] {
+        assert!(result(run(&args), 1)["error"].is_string());
+    }
+    // An invalid user file must not be skipped in favor of a system file.
+    std::fs::write(configs.join("server.yaml"), "invalid: [").unwrap();
+    assert!(result(run(&["config", "check", "--json"]), 1)["error"].is_string());
+}
+
 struct FakeNotifier;
 #[async_trait]
 impl Notifier for FakeNotifier {
@@ -23,7 +70,10 @@ impl Notifier for FakeNotifier {
 
 async fn cli(directory: &Path, args: &[&str]) -> Output {
     let directory = directory.to_owned();
-    let args: Vec<_> = args.iter().map(|s| s.to_string()).collect();
+    let mut args: Vec<_> = args.iter().map(|s| s.to_string()).collect();
+    if !args.iter().any(|arg| arg == "--config") {
+        args.splice(0..0, ["--config".to_owned(), "client.yaml".to_owned()]);
+    }
     tokio::task::spawn_blocking(move || {
         Command::new(env!("CARGO_BIN_EXE_flares"))
             .current_dir(directory)
@@ -347,7 +397,7 @@ async fn serve_without_pushover_supports_cli_open_close_and_reopen() {
     let mut child = ChildGuard(
         Command::new(env!("CARGO_BIN_EXE_flares"))
             .current_dir(dir.path())
-            .arg("serve")
+            .args(["serve", "--config", "server.yaml"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -439,7 +489,7 @@ async fn configured_server_retries_webhooks_and_monitors_heartbeats() {
     let mut child = ChildGuard(
         Command::new(env!("CARGO_BIN_EXE_flares"))
             .current_dir(dir.path())
-            .arg("serve")
+            .args(["serve", "--config", "server.yaml"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -572,7 +622,7 @@ fn config_commands_validate_and_redact_without_opening_storage_or_network() {
         let output = Command::new(env!("CARGO_BIN_EXE_flares"))
             .current_dir(dir.path())
             .env("FLARES_TEST_CONFIG_TOKEN", "environment-secret")
-            .args(["config", command, "--json"])
+            .args(["config", command, "--json", "--config", "server.yaml"])
             .output()
             .unwrap();
         let value = result(output, 0);
@@ -589,7 +639,7 @@ fn config_commands_validate_and_redact_without_opening_storage_or_network() {
     let failed = Command::new(env!("CARGO_BIN_EXE_flares"))
         .current_dir(dir.path())
         .env_remove("FLARES_TEST_CONFIG_TOKEN")
-        .args(["config", "check", "--json"])
+        .args(["config", "check", "--json", "--config", "server.yaml"])
         .output()
         .unwrap();
     assert!(
@@ -605,7 +655,14 @@ fn config_commands_validate_and_redact_without_opening_storage_or_network() {
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_flares"))
         .current_dir(dir.path())
-        .args(["config", "check", "--client", "--json"])
+        .args([
+            "config",
+            "check",
+            "--client",
+            "--json",
+            "--config",
+            "client.yaml",
+        ])
         .output()
         .unwrap();
     assert_eq!(result(output, 0)["valid"], true);

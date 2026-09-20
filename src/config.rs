@@ -10,6 +10,73 @@ use std::{
 };
 mod file;
 
+/// Search the user's configuration directory, then the system directory.
+pub fn default_path(filename: &str) -> Result<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    find_config(filename, home.as_deref(), Path::new("/etc/flares"))
+}
+
+fn find_config(filename: &str, home: Option<&Path>, system: &Path) -> Result<PathBuf> {
+    let user = home.map(|home| home.join(".config/flares").join(filename));
+    for path in user
+        .into_iter()
+        .chain(std::iter::once(system.join(filename)))
+    {
+        if path.try_exists().map_err(|_| {
+            anyhow::anyhow!(
+                "Cannot access configuration {}; use --config to specify a file",
+                path.display()
+            )
+        })? {
+            return Ok(path);
+        }
+    }
+    bail!("No {filename} found in ~/.config/flares or /etc/flares; use --config to specify a file")
+}
+
+#[cfg(test)]
+mod lookup_tests {
+    use super::*;
+
+    #[test]
+    fn user_config_takes_precedence_and_missing_files_fall_back() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let user = home.join(".config/flares");
+        let system = root.path().join("etc/flares");
+        fs::create_dir_all(&user).unwrap();
+        fs::create_dir_all(&system).unwrap();
+        for name in ["server.yaml", "client.yaml"] {
+            let path = system.join(name);
+            fs::write(&path, "system").unwrap();
+            assert_eq!(find_config(name, Some(&home), &system).unwrap(), path);
+            assert_eq!(find_config(name, None, &system).unwrap(), path);
+            let path = user.join(name);
+            // An invalid user file must be selected, not silently bypassed.
+            fs::write(&path, "invalid YAML [").unwrap();
+            assert_eq!(find_config(name, Some(&home), &system).unwrap(), path);
+            assert!(ServerConfig::load(&path).is_err());
+        }
+    }
+
+    #[test]
+    fn missing_config_reports_search_locations_and_does_not_create_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let system = root.path().join("etc/flares");
+        let error = find_config("server.yaml", Some(&home), &system)
+            .unwrap_err()
+            .to_string();
+        for expected in ["server.yaml", "~/.config/flares", "/etc/flares", "--config"] {
+            assert!(error.contains(expected));
+        }
+        assert!(!home.exists());
+        assert!(!system.exists());
+    }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum Secret {

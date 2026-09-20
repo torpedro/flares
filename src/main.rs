@@ -13,7 +13,7 @@ use flares::{
 #[derive(Parser)]
 #[command(version, about = "Track issues and send notifications")]
 struct Cli {
-    /// YAML configuration (defaults to server.yaml for serve, client.yaml otherwise).
+    /// YAML file; otherwise search ~/.config/flares then /etc/flares for server.yaml or client.yaml.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
     /// Print machine-readable JSON.
@@ -190,20 +190,23 @@ fn print_mutation(result: MutationResult, json: bool) -> anyhow::Result<u8> {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<u8> {
-    let path = cli.config.unwrap_or_else(|| {
-        if matches!(
-            cli.command,
-            Command::Serve
-                | Command::Config {
-                    command: ConfigCommand::Check { client: false }
-                        | ConfigCommand::Show { client: false }
-                }
-        ) {
-            "server.yaml".into()
-        } else {
-            "client.yaml".into()
-        }
-    });
+    let path = match cli.config {
+        Some(path) => path,
+        None => flares::config::default_path(
+            if matches!(
+                cli.command,
+                Command::Serve
+                    | Command::Config {
+                        command: ConfigCommand::Check { client: false }
+                            | ConfigCommand::Show { client: false }
+                    }
+            ) {
+                "server.yaml"
+            } else {
+                "client.yaml"
+            },
+        )?,
+    };
     if let Command::Config { command } = &cli.command {
         let client = matches!(
             command,

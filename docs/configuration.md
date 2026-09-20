@@ -2,6 +2,25 @@
 
 The server and CLI read YAML files. SDK configuration is unchanged: clients accept URL, token, and timeout arguments directly. Start from [server.yaml](../examples/server.yaml) and [client.yaml](../examples/client.yaml).
 
+## Configuration lookup
+
+An explicit `--config PATH` always selects that file, including relative paths.
+Otherwise, Flares checks these locations in order:
+
+1. `$HOME/.config/flares/server.yaml` or `$HOME/.config/flares/client.yaml`.
+2. `/etc/flares/server.yaml` or `/etc/flares/client.yaml`.
+
+`serve` and server `config check/show` use `server.yaml`. Client commands and
+`config check/show --client` use `client.yaml`. The current directory is never
+searched automatically. If `HOME` is unset or empty, only `/etc/flares` is checked.
+Lookup falls back only when the user file is absent; invalid or unreadable files
+produce an error rather than silently selecting another configuration. If neither
+file exists, the error identifies the search locations and suggests `--config`.
+
+Create the user directory with `mkdir -p ~/.config/flares`. For system installations,
+place configuration in `/etc/flares` and explicitly set `storage.database` to a
+writable data location, such as `/var/lib/flares/flares.sqlite3`.
+
 ## Validate and inspect
 
 ```sh
