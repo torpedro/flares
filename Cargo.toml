@@ -6,9 +6,11 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/torpedro/flares"
 
 [package]
 name = "flares"
+repository.workspace = true
 version.workspace = true
 edition.workspace = true
 description = "HTTP issue tracking with Pushover notifications"

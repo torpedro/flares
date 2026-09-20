@@ -11,6 +11,11 @@ readme = "README.md"
 license = "MIT"
 dependencies = ["httpx>=0.28,<1", "pydantic>=2.10,<3"]
 
+[project.urls]
+Repository = "https://github.com/torpedro/flares"
+Issues = "https://github.com/torpedro/flares/issues"
+Documentation = "https://github.com/torpedro/flares/blob/main/clients/python/README.md"
+
 [dependency-groups]
 dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
 

@@ -308,7 +308,8 @@ Commit `Cargo.lock` for reproducible dependency resolution. Tests use temporary 
 Commit `clients/python/uv.lock` as well. The shared suite requires Bash, curl, jq,
 and the debug server and Rust adapter built above. Python's unit tests can run
 independently with `uv run --project clients/python pytest clients/python/tests`.
-CI also runs ShellCheck, detects OpenAPI/version drift, and builds package artifacts.
+CI also runs ShellCheck and detects OpenAPI/version drift. Tags and manual workflow
+runs build package artifacts; ordinary branch and pull request runs execute checks only.
 
 ## Releases
 
@@ -329,6 +330,9 @@ Python wheel in isolation. CI uploads these artifacts on Linux; nothing is publi
 automatically. Publish `flares-types` before `flares-client` when releasing to crates.io;
 Python and Bash have separate artifacts from the same tag. Record release changes
 in [CHANGELOG.md](CHANGELOG.md).
+
+Follow the [manual release checklist](docs/releases.md) to publish to crates.io,
+PyPI, and GitHub Releases. Tagging runs CI but never publishes packages automatically.
 
 ### Upgrading from Flare
 

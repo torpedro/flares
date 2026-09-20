@@ -1,5 +1,6 @@
 [package]
 name = "flares-types"
+repository.workspace = true
 version.workspace = true
 edition.workspace = true
 license.workspace = true
