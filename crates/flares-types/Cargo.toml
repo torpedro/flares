@@ -1,9 +1,9 @@
 [package]
-name = "flare-types"
+name = "flares-types"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Shared HTTP API types for Flare"
+description = "Shared HTTP API types for Flares"
 readme = "README.md"
 
 [features]

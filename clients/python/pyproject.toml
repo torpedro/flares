@@ -3,9 +3,9 @@ requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"
 
 [project]
-name = "flare-client"
+name = "flares-client"
 version = "0.1.0"
-description = "Synchronous and asynchronous HTTP clients for Flare"
+description = "Synchronous and asynchronous HTTP clients for Flares"
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"

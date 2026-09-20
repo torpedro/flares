@@ -1,7 +1,7 @@
 use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Parser, Subcommand};
-use flare::{
+use flares::{
     api,
     client::ApiClient,
     config::{ClientConfig, ServerConfig},
@@ -244,7 +244,7 @@ async fn run(cli: Cli) -> anyhow::Result<u8> {
         let listener = tokio::net::TcpListener::bind((config.host, config.port))
             .await
             .map_err(|_| anyhow::anyhow!("Cannot bind HTTP listener; check host and port"))?;
-        tracing::info!(address = %listener.local_addr()?, "Flare listening");
+        tracing::info!(address = %listener.local_addr()?, "Flares listening");
         let (stop, receiver) = tokio::sync::watch::channel(false);
         let worker = tokio::spawn(delivery.run(receiver));
         let signal = stop.clone();

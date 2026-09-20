@@ -1,8 +1,8 @@
-use flare::config::{ClientConfig, ServerConfig};
+use flares::config::{ClientConfig, ServerConfig};
 
 fn server_yaml() -> String {
     format!(
-        "api_token: shared-secret\npushover:\n  app_token: {}\n  user_key: {}\n",
+        "server:\n  api_token: shared-secret\ndestinations:\n  pushover:\n    type: pushover\n    app_token: {}\n    user_key: {}\n",
         "a".repeat(30),
         "u".repeat(30)
     )
@@ -14,7 +14,7 @@ fn defaults_and_relative_paths_are_config_relative() {
     let path = dir.path().join("server.yaml");
     std::fs::write(&path, server_yaml()).unwrap();
     let config = ServerConfig::load(&path).unwrap();
-    assert_eq!(config.database, dir.path().join("flare.sqlite3"));
+    assert_eq!(config.database, dir.path().join("flares.sqlite3"));
     assert_eq!(config.port, 8000);
     assert_eq!(config.host.to_string(), "127.0.0.1");
     assert!(!format!("{config:?}").contains("shared-secret"));
@@ -26,10 +26,13 @@ fn defaults_and_relative_paths_are_config_relative() {
 }
 
 #[test]
-fn pushover_can_be_omitted_or_null() {
+fn destinations_can_be_omitted_or_empty() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("server.yaml");
-    for yaml in ["api_token: token\n", "api_token: token\npushover: null\n"] {
+    for yaml in [
+        "server: {api_token: token}\n",
+        "server: {api_token: token}\ndestinations: {}\n",
+    ] {
         std::fs::write(&path, yaml).unwrap();
         assert!(ServerConfig::load(&path).unwrap().destinations.is_empty());
     }
@@ -48,16 +51,16 @@ fn invalid_configurations_fail_without_echoing_input() {
     let path = dir.path().join("server.yaml");
     for text in [
         String::new(),
-        "api_token: [my-secret".into(),
-        "api_token: my-secret\npushover: {}\n".into(),
-        "api_token: my-secret\npushover:\n  app_token: my-secret\n".into(),
-        format!("{}port: 0\n", server_yaml()),
-        format!("{}database: ':memory:'\n", server_yaml()),
+        "server: {api_token: [my-secret".into(),
+        "server: {api_token: my-secret}\ndestinations: {phone: {type: pushover}}\n".into(),
+        "server: {api_token: my-secret}\ndestinations: {phone: {type: pushover, app_token: my-secret}}\n".into(),
+        server_yaml().replace("server:\n", "server:\n  listen: 127.0.0.1:0\n"),
+        format!("{}storage: {{database: ':memory:'}}\n", server_yaml()),
         format!("{}unknown: my-secret\n", server_yaml()),
         server_yaml().replace(&"a".repeat(30), "my-secret"),
         server_yaml().replace("shared-secret", "''"),
         server_yaml().replace("shared-secret", "'has spaces'"),
-        format!("{}  device: 'bad device'\n", server_yaml()),
+        format!("{}    device: 'bad device'\n", server_yaml()),
     ] {
         std::fs::write(&path, text).unwrap();
         let error = ServerConfig::load(&path).unwrap_err().to_string();
@@ -88,7 +91,7 @@ fn invalid_configurations_fail_without_echoing_input() {
 fn delivery_and_routing_configuration_is_validated_and_secrets_are_redacted() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("server.yaml");
-    let valid = "api_token: shared-secret\ndelivery:\n  max_attempts: 3\n  retry_base_seconds: 2\n  retry_max_seconds: 60\ndestinations:\n  audit:\n    type: webhook\n    url: https://example.com/hook?token=webhook-secret\n    bearer_token: bearer-secret\ndefault_destinations: [audit]\nroutes:\n  critical: [audit]\n  info: []\n";
+    let valid = "server: {api_token: shared-secret}\ndelivery:\n  retry: {max_attempts: 3, base_delay: 2s, max_delay: 60s}\ndestinations:\n  audit:\n    type: webhook\n    url: https://example.com/hook?token=webhook-secret\n    bearer_token: bearer-secret\nrouting:\n  default: [audit]\n  severity:\n    critical: [audit]\n    info: []\n";
     std::fs::write(&path, valid).unwrap();
     let config = ServerConfig::load(&path).unwrap();
     assert_eq!(config.delivery.max_attempts, 3);
@@ -98,16 +101,13 @@ fn delivery_and_routing_configuration_is_validated_and_secrets_are_redacted() {
     }
     for invalid in [
         valid.replace("max_attempts: 3", "max_attempts: 0"),
-        valid.replace("retry_max_seconds: 60", "retry_max_seconds: 1"),
+        valid.replace("max_delay: 60s", "max_delay: 1s"),
         valid.replace("type: webhook", "type: unknown"),
         valid.replace(
             "https://example.com/hook?token=webhook-secret",
             "file:///secret",
         ),
-        valid.replace(
-            "default_destinations: [audit]",
-            "default_destinations: [missing]",
-        ),
+        valid.replace("default: [audit]", "default: [missing]"),
         valid.replace("critical: [audit]", "critical: [audit, audit]"),
         valid.replace("critical:", "urgent:"),
         valid.replace("bearer-secret", "'has spaces'"),
@@ -200,38 +200,46 @@ routing:
 }
 
 #[test]
-fn legacy_and_modern_configs_normalize_to_the_same_settings() {
+fn legacy_config_fields_are_rejected_even_alongside_modern_fields() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("server.yaml");
-    let credentials = format!(
-        "app_token: {}\n    user_key: {}",
-        "a".repeat(30),
-        "u".repeat(30)
-    );
-    let legacy = format!(
-        "api_token: token\npushover:\n    {credentials}\ndelivery:\n  max_attempts: 3\n  retry_base_seconds: 10\n  retry_max_seconds: 3600\n  rate_limit_per_minute: 120\n  group_window_seconds: 30\n"
-    );
-    std::fs::write(&path, &legacy).unwrap();
-    let expected = ServerConfig::load(&path).unwrap().effective();
-    let modern = format!(
-        "server:\n  api_token: token\ndestinations:\n  pushover:\n    type: pushover\n    {credentials}\ndelivery:\n  retry: {{max_attempts: 3}}\nrouting:\n  default: [pushover]\n"
-    );
-    std::fs::write(&path, modern).unwrap();
-    assert_eq!(ServerConfig::load(&path).unwrap().effective(), expected);
-    std::fs::write(&path, format!("{legacy}default_destinations: []\n")).unwrap();
-    assert!(
-        ServerConfig::load(&path)
-            .unwrap()
-            .default_destinations
-            .is_empty()
-    );
-    std::fs::write(&path, format!("{legacy}routing:\n  default: []\n")).unwrap();
-    assert!(
-        ServerConfig::load(&path)
-            .unwrap()
-            .default_destinations
-            .is_empty()
-    );
+    for legacy in [
+        "host: 127.0.0.1",
+        "port: 8000",
+        "api_token: old-secret",
+        "database: old.sqlite3",
+        "pushover: null",
+        "default_destinations: []",
+        "routes: {}",
+        "delivery: {max_attempts: 3}",
+        "delivery: {retry_base_seconds: 10}",
+        "delivery: {retry_max_seconds: 60}",
+        "delivery: {rate_limit_per_minute: 120}",
+        "delivery: {group_window_seconds: 30}",
+        "destinations: {phone: {type: pushover, config: {app_token: old-secret, user_key: old-secret}}}",
+        "delivery: {group_window: 30}",
+        "delivery: {retry: {base_delay: 10}}",
+        "delivery: {rate_limit: {attempts: 10, window: 60}}",
+        "storage: {retention: {deliveries: 30}}",
+    ] {
+        for text in [
+            legacy.to_owned(),
+            format!("server: {{api_token: token}}\n{legacy}\n"),
+        ] {
+            std::fs::write(&path, text).unwrap();
+            let error = ServerConfig::load(&path).unwrap_err().to_string();
+            assert!(!error.contains("old-secret"));
+        }
+    }
+    for routing in ["", "routing: {default: []}"] {
+        std::fs::write(&path, format!("{}{routing}\n", server_yaml())).unwrap();
+        assert!(
+            ServerConfig::load(&path)
+                .unwrap()
+                .default_destinations
+                .is_empty()
+        );
+    }
 }
 
 #[test]
@@ -265,11 +273,11 @@ fn config_errors_identify_fields_without_printing_secrets() {
         ),
         (
             "server:\n  api_token: token\napi_token: conflicting-secret\n",
-            "server",
+            "configuration",
         ),
         (
             "server:\n  api_token: token\ndelivery:\n  max_attempts: 2\n  retry: {max_attempts: 3}\n",
-            "delivery.retry",
+            "delivery",
         ),
         (
             "server:\n  api_token: token\nrouting:\n  default: [missing-secret]\n",
@@ -303,6 +311,8 @@ fn client_supports_duration_strings_and_secret_files() {
     assert_eq!(config.api_token.expose(), "client-secret");
     assert_eq!(config.timeout, 120.0);
     assert!(!config.effective().to_string().contains("client-secret"));
-    std::fs::write(&path, "api_token: token\ntimeout: 0.5\n").unwrap();
-    assert_eq!(ClientConfig::load(&path).unwrap().timeout, 0.5);
+    for timeout in ["15", "0.5", "\"15\""] {
+        std::fs::write(&path, format!("api_token: token\ntimeout: {timeout}\n")).unwrap();
+        assert!(ClientConfig::load(&path).is_err());
+    }
 }

@@ -6,7 +6,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use flare::{api, models::Notification, notifications::Notifier, store::Store};
+use flares::{api, models::Notification, notifications::Notifier, store::Store};
 use serde_json::{Value, json};
 
 struct FakeNotifier;
@@ -25,7 +25,7 @@ async fn cli(directory: &Path, args: &[&str]) -> Output {
     let directory = directory.to_owned();
     let args: Vec<_> = args.iter().map(|s| s.to_string()).collect();
     tokio::task::spawn_blocking(move || {
-        Command::new(env!("CARGO_BIN_EXE_flare"))
+        Command::new(env!("CARGO_BIN_EXE_flares"))
             .current_dir(directory)
             .args(args)
             .output()
@@ -58,7 +58,7 @@ async fn commands_exercise_real_http_and_exit_codes() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let config = format!("api_token: shared-token\nbase_url: http://{address}\ntimeout: 2\n");
+    let config = format!("api_token: shared-token\nbase_url: http://{address}\ntimeout: 2s\n");
     std::fs::write(dir.path().join("client.yaml"), &config).unwrap();
 
     let alert = result(
@@ -335,7 +335,7 @@ async fn serve_without_pushover_supports_cli_open_close_and_reopen() {
     let port = reservation.local_addr().unwrap().port();
     std::fs::write(
         dir.path().join("server.yaml"),
-        format!("port: {port}\napi_token: token\ndatabase: data/issues.sqlite3\n"),
+        format!("server:\n  listen: 127.0.0.1:{port}\n  api_token: token\nstorage:\n  database: data/issues.sqlite3\n"),
     )
     .unwrap();
     std::fs::write(
@@ -345,7 +345,7 @@ async fn serve_without_pushover_supports_cli_open_close_and_reopen() {
     .unwrap();
     drop(reservation);
     let mut child = ChildGuard(
-        Command::new(env!("CARGO_BIN_EXE_flare"))
+        Command::new(env!("CARGO_BIN_EXE_flares"))
             .current_dir(dir.path())
             .arg("serve")
             .stdout(std::process::Stdio::null())
@@ -437,7 +437,7 @@ async fn configured_server_retries_webhooks_and_monitors_heartbeats() {
     .unwrap();
     drop(reservation);
     let mut child = ChildGuard(
-        Command::new(env!("CARGO_BIN_EXE_flare"))
+        Command::new(env!("CARGO_BIN_EXE_flares"))
             .current_dir(dir.path())
             .arg("serve")
             .stdout(std::process::Stdio::null())
@@ -567,11 +567,11 @@ async fn configured_server_retries_webhooks_and_monitors_heartbeats() {
 #[test]
 fn config_commands_validate_and_redact_without_opening_storage_or_network() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("server.yaml"),"server:\n  api_token: {env: FLARE_TEST_CONFIG_TOKEN}\nstorage:\n  database: absent/database.sqlite3\ndestinations:\n  local:\n    type: webhook\n    url: http://127.0.0.1:1/secret-url\nrouting:\n  default: [local]\n").unwrap();
+    std::fs::write(dir.path().join("server.yaml"),"server:\n  api_token: {env: FLARES_TEST_CONFIG_TOKEN}\nstorage:\n  database: absent/database.sqlite3\ndestinations:\n  local:\n    type: webhook\n    url: http://127.0.0.1:1/secret-url\nrouting:\n  default: [local]\n").unwrap();
     for command in ["check", "show"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_flare"))
+        let output = Command::new(env!("CARGO_BIN_EXE_flares"))
             .current_dir(dir.path())
-            .env("FLARE_TEST_CONFIG_TOKEN", "environment-secret")
+            .env("FLARES_TEST_CONFIG_TOKEN", "environment-secret")
             .args(["config", command, "--json"])
             .output()
             .unwrap();
@@ -586,9 +586,9 @@ fn config_commands_validate_and_redact_without_opening_storage_or_network() {
         assert!(!value.to_string().contains("secret-url"));
         assert!(!dir.path().join("absent").exists());
     }
-    let failed = Command::new(env!("CARGO_BIN_EXE_flare"))
+    let failed = Command::new(env!("CARGO_BIN_EXE_flares"))
         .current_dir(dir.path())
-        .env_remove("FLARE_TEST_CONFIG_TOKEN")
+        .env_remove("FLARES_TEST_CONFIG_TOKEN")
         .args(["config", "check", "--json"])
         .output()
         .unwrap();
@@ -603,7 +603,7 @@ fn config_commands_validate_and_redact_without_opening_storage_or_network() {
         "api_token: token\ntimeout: 30s\n",
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_flare"))
+    let output = Command::new(env!("CARGO_BIN_EXE_flares"))
         .current_dir(dir.path())
         .args(["config", "check", "--client", "--json"])
         .output()

@@ -23,16 +23,16 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
-      - run: cargo build --workspace --examples --locked && cargo build --bin flare --locked
+      - run: cargo build --workspace --examples --locked && cargo build --bin flares --locked
       - run: uv sync --project clients/python --locked
       - run: uv run --project clients/python ruff check --config clients/python/pyproject.toml clients/python tests/contract scripts
       - run: uv run --project clients/python ruff format --check --config clients/python/pyproject.toml clients/python tests/contract scripts
-      - run: shellcheck clients/bash/flare.sh clients/bash/tests/source.sh
+      - run: shellcheck clients/bash/flares.sh clients/bash/tests/source.sh
       - run: bash clients/bash/tests/source.sh
       - run: uv run --project clients/python pytest -q
       - run: uv run --project clients/python python scripts/build_artifacts.py
       - uses: actions/upload-artifact@v4
         with:
-          name: flare-linux-x86_64-and-clients
+          name: flares-linux-x86_64-and-clients
           path: dist/*
           if-no-files-found: error

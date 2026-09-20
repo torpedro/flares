@@ -326,7 +326,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
 
 [[package]]
-name = "flare"
+name = "flares"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -334,8 +334,8 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
- "flare-client",
- "flare-types",
+ "flares-client",
+ "flares-types",
  "reqwest",
  "rusqlite",
  "serde",
@@ -353,10 +353,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "flare-client"
+name = "flares-client"
 version = "0.1.0"
 dependencies = [
- "flare-types",
+ "flares-types",
  "reqwest",
  "serde",
  "serde_json",
@@ -365,7 +365,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "flare-types"
+name = "flares-types"
 version = "0.1.0"
 dependencies = [
  "chrono",

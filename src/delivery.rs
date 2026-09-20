@@ -552,7 +552,7 @@ impl DeliveryService {
         self.store.run(|db| {
             let (attempts,sent,failed,skipped,latency):(i64,i64,i64,i64,i64) = db.query_row("SELECT attempts,sent,failed,skipped,latency_ms FROM delivery_metrics WHERE id=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
             let queued:i64 = db.query_row("SELECT COUNT(*) FROM deliveries WHERE state<>'done'",[],|r|r.get(0))?;
-            Ok(format!("# TYPE flare_notification_attempts_total counter\nflare_notification_attempts_total {attempts}\n# TYPE flare_notifications_total counter\nflare_notifications_total{{status=\"sent\"}} {sent}\nflare_notifications_total{{status=\"failed\"}} {failed}\nflare_notifications_total{{status=\"skipped\"}} {skipped}\n# TYPE flare_notification_latency_seconds summary\nflare_notification_latency_seconds_sum {}\nflare_notification_latency_seconds_count {}\n# TYPE flare_delivery_queue_depth gauge\nflare_delivery_queue_depth {queued}\n",latency as f64/1000.0,sent+failed))
+            Ok(format!("# TYPE flares_notification_attempts_total counter\nflares_notification_attempts_total {attempts}\n# TYPE flares_notifications_total counter\nflares_notifications_total{{status=\"sent\"}} {sent}\nflares_notifications_total{{status=\"failed\"}} {failed}\nflares_notifications_total{{status=\"skipped\"}} {skipped}\n# TYPE flares_notification_latency_seconds summary\nflares_notification_latency_seconds_sum {}\nflares_notification_latency_seconds_count {}\n# TYPE flares_delivery_queue_depth gauge\nflares_delivery_queue_depth {queued}\n",latency as f64/1000.0,sent+failed))
         }).await
     }
     pub async fn run(self, mut stop: tokio::sync::watch::Receiver<bool>) {

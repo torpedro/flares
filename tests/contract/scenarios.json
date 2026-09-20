@@ -22,5 +22,5 @@
   {"op":"delete_heartbeat","args":{"id":"beat /🦀"}},
   {"op":"check_in","args":{"id":"beat /🦀"},"http_error":404},
   {"op":"get_issue","args":{"id":"missing"},"http_error":404},
-  {"op":"metrics","args":{},"contains":"flare_notification_attempts_total"}
+  {"op":"metrics","args":{},"contains":"flares_notification_attempts_total"}
 ]

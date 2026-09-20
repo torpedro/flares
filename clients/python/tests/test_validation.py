@@ -1,7 +1,7 @@
 import asyncio
 
 import pytest
-from flare_client import AsyncClient, Client, ValidationError
+from flares_client import AsyncClient, Client, ValidationError
 
 
 @pytest.mark.parametrize("client_type", [Client, AsyncClient])

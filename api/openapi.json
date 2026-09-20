@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Flare",
+    "title": "Flares",
     "description": "HTTP issue tracking with Pushover notifications",
     "license": {
       "name": "MIT",

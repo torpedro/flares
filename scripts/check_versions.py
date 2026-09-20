@@ -16,17 +16,17 @@ def manifest(path):
 def main():
     cargo = manifest("Cargo.toml")
     version = cargo["workspace"]["package"]["version"]
-    for path in ("Cargo.toml", "crates/flare-types/Cargo.toml", "clients/rust/Cargo.toml"):
+    for path in ("Cargo.toml", "crates/flares-types/Cargo.toml", "clients/rust/Cargo.toml"):
         data = manifest(path)
         assert data["package"]["version"] == {"workspace": True}, path
         for name, dep in data.get("dependencies", {}).items():
             if isinstance(dep, dict) and "path" in dep:
                 assert dep["version"] == version, (path, name)
     assert manifest("clients/python/pyproject.toml")["project"]["version"] == version
-    python = (ROOT / "clients/python/src/flare_client/__init__.py").read_text()
+    python = (ROOT / "clients/python/src/flares_client/__init__.py").read_text()
     assert re.search(r'^__version__ = "([^"]+)"', python, re.M)[1] == version
-    bash = (ROOT / "clients/bash/flare.sh").read_text()
-    assert re.search(r"^FLARE_CLIENT_VERSION=(.+)$", bash, re.M)[1] == version
+    bash = (ROOT / "clients/bash/flares.sh").read_text()
+    assert re.search(r"^FLARES_CLIENT_VERSION=(.+)$", bash, re.M)[1] == version
     assert json.loads((ROOT / "api/openapi.json").read_text())["info"]["version"] == version
     if os.environ.get("GITHUB_REF_TYPE") == "tag":
         assert os.environ["GITHUB_REF_NAME"] == f"v{version}", "Tag must match package versions"

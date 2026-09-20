@@ -20,7 +20,7 @@ def main():
     version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
     dist = ROOT / "dist"
     dist.mkdir(exist_ok=True)
-    run("cargo", "build", "--release", "--locked", "--bin", "flare")
+    run("cargo", "build", "--release", "--locked", "--bin", "flares")
     # Cargo 1.94's temporary registry can fail verification of unpublished workspace
     # dependencies. Verify the exact extracted artifacts together below instead.
     run(
@@ -28,23 +28,23 @@ def main():
         "package",
         "--workspace",
         "--exclude",
-        "flare",
+        "flares",
         "--locked",
         "--allow-dirty",
         "--no-verify",
     )
     archives = []
-    for name in ("flare-types", "flare-client"):
+    for name in ("flares-types", "flares-client"):
         archive = ROOT / f"target/package/{name}-{version}.crate"
         shutil.copy2(archive, dist)
         archives.append(archive)
-    with tempfile.TemporaryDirectory(prefix="flare-packages-") as directory:
+    with tempfile.TemporaryDirectory(prefix="flares-packages-") as directory:
         for archive in archives:
             with tarfile.open(archive) as package:
                 package.extractall(directory, filter="data")
-        types = Path(directory) / f"flare-types-{version}"
-        client = Path(directory) / f"flare-client-{version}/Cargo.toml"
-        patch = f'patch.crates-io.flare-types.path="{types}"'
+        types = Path(directory) / f"flares-types-{version}"
+        client = Path(directory) / f"flares-client-{version}/Cargo.toml"
+        patch = f'patch.crates-io.flares-types.path="{types}"'
         run(
             "cargo",
             "test",
@@ -72,7 +72,7 @@ def main():
         forbidden = {"axum", "rusqlite", "clap", "utoipa"}
         assert not forbidden.intersection(line.split()[0] for line in tree.splitlines())
     run("uv", "build", "--project", "clients/python", "--out-dir", str(dist))
-    wheel = dist / f"flare_client-{version}-py3-none-any.whl"
+    wheel = dist / f"flares_client-{version}-py3-none-any.whl"
     run(
         "uv",
         "run",
@@ -82,15 +82,15 @@ def main():
         str(wheel),
         "python",
         "-c",
-        "import flare_client; from importlib.resources import files; "
-        "assert files(flare_client).joinpath('py.typed').is_file(); "
-        "client = flare_client.Client('http://127.0.0.1:1', 'token'); client.close()",
+        "import flares_client; from importlib.resources import files; "
+        "assert files(flares_client).joinpath('py.typed').is_file(); "
+        "client = flares_client.Client('http://127.0.0.1:1', 'token'); client.close()",
     )
-    with tarfile.open(dist / f"flare-bash-{version}.tar.gz", "w:gz") as archive:
-        for name in ("flare.sh", "README.md"):
-            archive.add(ROOT / "clients/bash" / name, arcname=f"flare-bash-{version}/{name}")
-    with tarfile.open(dist / f"flare-{version}.tar.gz", "w:gz") as archive:
-        archive.add(ROOT / "target/release/flare", arcname="flare")
+    with tarfile.open(dist / f"flares-bash-{version}.tar.gz", "w:gz") as archive:
+        for name in ("flares.sh", "README.md"):
+            archive.add(ROOT / "clients/bash" / name, arcname=f"flares-bash-{version}/{name}")
+    with tarfile.open(dist / f"flares-{version}.tar.gz", "w:gz") as archive:
+        archive.add(ROOT / "target/release/flares", arcname="flares")
     print(f"Artifacts built and checked in {dist}")
 
 

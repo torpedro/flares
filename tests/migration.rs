@@ -1,4 +1,4 @@
-use flare::{
+use flares::{
     models::{Notification, NotificationStatus, OpenIssue},
     store::Store,
 };

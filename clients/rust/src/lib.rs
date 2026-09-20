@@ -5,7 +5,7 @@ use std::time::Duration;
 use reqwest::{Client, RequestBuilder, Url};
 use serde::de::DeserializeOwned;
 
-pub use flare_types::*;
+pub use flares_types::*;
 
 #[derive(Clone)]
 pub struct ApiClient {

@@ -141,9 +141,9 @@ async fn retries_are_bounded_and_do_not_resend_successful_destinations() {
     assert_eq!(first.calls.lock().unwrap().len(), 1);
     assert_eq!(second.calls.lock().unwrap().len(), 3);
     let metrics = service.metrics().await.unwrap();
-    assert!(metrics.contains("flare_notification_attempts_total 4\n"));
-    assert!(metrics.contains("flare_notifications_total{status=\"failed\"} 3\n"));
-    assert!(metrics.contains("flare_delivery_queue_depth 0\n"));
+    assert!(metrics.contains("flares_notification_attempts_total 4\n"));
+    assert!(metrics.contains("flares_notifications_total{status=\"failed\"} 3\n"));
+    assert!(metrics.contains("flares_delivery_queue_depth 0\n"));
 }
 
 #[tokio::test]

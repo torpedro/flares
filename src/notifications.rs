@@ -134,6 +134,7 @@ impl Webhook {
         if let Some(token) = &self.bearer_token {
             request = request.bearer_auth(token.expose());
         }
+        // Preserve the original wire prefix so queued retries retain their deduplication key.
         if let Some(id) = id {
             request = request.header("Idempotency-Key", format!("flare-delivery-{id}"));
         }

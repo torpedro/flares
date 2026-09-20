@@ -1,4 +1,4 @@
-//! Wire schemas normalize legacy aliases before the runtime validates settings.
+//! Strict YAML schemas for the structured configuration format.
 use super::*;
 use serde::{Deserializer, de::DeserializeOwned};
 use std::net::SocketAddr;
@@ -7,39 +7,29 @@ use std::net::SocketAddr;
 struct Seconds(u64);
 impl<'de> Deserialize<'de> for Seconds {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Input {
-            Number(u64),
-            Text(String),
-        }
-        match Input::deserialize(deserializer)? {
-            Input::Number(value) => Ok(Self(value)),
-            Input::Text(text) => {
-                let split = text
-                    .find(|c: char| !c.is_ascii_digit())
-                    .unwrap_or(text.len());
-                let (number, unit) = text.split_at(split);
-                let multiplier = match unit {
-                    "s" => 1,
-                    "m" => 60,
-                    "h" => 3600,
-                    "d" => 86400,
-                    "w" => 604800,
-                    _ => {
-                        return Err(serde::de::Error::custom(
-                            "expected duration with s, m, h, d, or w suffix",
-                        ));
-                    }
-                };
-                number
-                    .parse::<u64>()
-                    .ok()
-                    .and_then(|n| n.checked_mul(multiplier))
-                    .map(Self)
-                    .ok_or_else(|| serde::de::Error::custom("invalid duration"))
+        let text = String::deserialize(deserializer)?;
+        let split = text
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(text.len());
+        let (number, unit) = text.split_at(split);
+        let multiplier = match unit {
+            "s" => 1,
+            "m" => 60,
+            "h" => 3600,
+            "d" => 86400,
+            "w" => 604800,
+            _ => {
+                return Err(serde::de::Error::custom(
+                    "expected duration with s, m, h, d, or w suffix",
+                ));
             }
-        }
+        };
+        number
+            .parse::<u64>()
+            .ok()
+            .and_then(|n| n.checked_mul(multiplier))
+            .map(Self)
+            .ok_or_else(|| serde::de::Error::custom("invalid duration"))
     }
 }
 #[derive(Default, Deserialize)]
@@ -83,31 +73,10 @@ struct Delivery {
     rate_limit: Option<Rate>,
     group_window: Option<Seconds>,
     queue_limit: Option<u64>,
-    max_attempts: Option<u32>,
-    retry_base_seconds: Option<u64>,
-    retry_max_seconds: Option<u64>,
-    rate_limit_per_minute: Option<u32>,
-    group_window_seconds: Option<u64>,
 }
 impl Delivery {
-    fn normalize(self) -> Result<DeliveryConfig> {
+    fn resolve(self) -> DeliveryConfig {
         let mut d = DeliveryConfig::default();
-        if self.retry.is_some()
-            && (self.max_attempts.is_some()
-                || self.retry_base_seconds.is_some()
-                || self.retry_max_seconds.is_some())
-        {
-            bail!("delivery.retry: cannot be combined with legacy retry fields");
-        }
-        if self.rate_limit.is_some() && self.rate_limit_per_minute.is_some() {
-            bail!("delivery.rate_limit: cannot be combined with rate_limit_per_minute");
-        }
-        if self.group_window.is_some() && self.group_window_seconds.is_some() {
-            bail!("delivery.group_window: cannot be combined with group_window_seconds");
-        }
-        d.max_attempts = self.max_attempts.unwrap_or(d.max_attempts);
-        d.retry_base_seconds = self.retry_base_seconds.unwrap_or(d.retry_base_seconds);
-        d.retry_max_seconds = self.retry_max_seconds.unwrap_or(d.retry_max_seconds);
         if let Some(retry) = self.retry {
             let mut p = DestinationPolicy::from(&d);
             retry.apply(&mut p);
@@ -115,9 +84,6 @@ impl Delivery {
             d.retry_base_seconds = p.retry_base_seconds;
             d.retry_max_seconds = p.retry_max_seconds;
         }
-        d.rate_limit_per_minute = self
-            .rate_limit_per_minute
-            .unwrap_or(d.rate_limit_per_minute);
         if let Some(rate) = self.rate_limit {
             d.rate_limit_per_minute = rate.attempts;
             d.rate_window_seconds = rate.window.0;
@@ -125,10 +91,9 @@ impl Delivery {
         d.group_window_seconds = self
             .group_window
             .map(|s| s.0)
-            .or(self.group_window_seconds)
             .unwrap_or(d.group_window_seconds);
         d.queue_limit = self.queue_limit.unwrap_or(d.queue_limit);
-        Ok(d)
+        d
     }
 }
 #[derive(Default, Deserialize)]
@@ -150,10 +115,9 @@ impl Overrides {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Destination {
     Pushover {
-        app_token: Option<Secret>,
-        user_key: Option<Secret>,
+        app_token: Secret,
+        user_key: Secret,
         device: Option<String>,
-        config: Option<PushoverConfig>,
         delivery: Option<Overrides>,
     },
     Webhook {
@@ -195,32 +159,28 @@ impl Default for Storage {
     }
 }
 fn database() -> PathBuf {
-    "flare.sqlite3".into()
+    "flares.sqlite3".into()
 }
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Routing {
-    default: Option<Vec<String>>,
+    #[serde(default)]
+    default: Vec<String>,
     #[serde(default)]
     severity: BTreeMap<Severity, Vec<String>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Server {
-    server: Option<Listener>,
-    storage: Option<Storage>,
-    routing: Option<Routing>,
+    server: Listener,
+    #[serde(default)]
+    storage: Storage,
+    #[serde(default)]
+    routing: Routing,
     #[serde(default)]
     delivery: Delivery,
     #[serde(default)]
     destinations: BTreeMap<String, Destination>,
-    host: Option<IpAddr>,
-    port: Option<u16>,
-    database: Option<PathBuf>,
-    api_token: Option<Secret>,
-    pushover: Option<PushoverConfig>,
-    default_destinations: Option<Vec<String>>,
-    routes: Option<BTreeMap<Severity, Vec<String>>>,
 }
 
 fn read<T: DeserializeOwned>(path: &Path) -> Result<T> {
@@ -246,42 +206,10 @@ fn read<T: DeserializeOwned>(path: &Path) -> Result<T> {
 }
 pub(super) fn server(path: &Path) -> Result<ServerConfig> {
     let raw: Server = read(path)?;
-    let (host, port, api_token) = if let Some(server) = raw.server {
-        if raw.host.is_some() || raw.port.is_some() || raw.api_token.is_some() {
-            bail!("server: cannot be combined with legacy host, port, or api_token fields");
-        }
-        (server.listen.ip(), server.listen.port(), server.api_token)
-    } else {
-        (
-            raw.host.unwrap_or_else(|| listen().ip()),
-            raw.port.unwrap_or(8000),
-            raw.api_token
-                .ok_or_else(|| anyhow::anyhow!("server.api_token: required field is missing"))?,
-        )
-    };
-    let storage = if let Some(storage) = raw.storage {
-        if raw.database.is_some() {
-            bail!("storage.database: cannot be combined with legacy database");
-        }
-        storage
-    } else {
-        Storage {
-            database: raw.database.unwrap_or_else(database),
-            ..Default::default()
-        }
-    };
-    let routing = if let Some(routing) = raw.routing {
-        if raw.default_destinations.is_some() || raw.routes.is_some() {
-            bail!("routing: cannot be combined with legacy default_destinations or routes");
-        }
-        routing
-    } else {
-        Routing {
-            default: raw.default_destinations,
-            severity: raw.routes.unwrap_or_default(),
-        }
-    };
-    let delivery = raw.delivery.normalize()?;
+    let Listener { listen, api_token } = raw.server;
+    let storage = raw.storage;
+    let routing = raw.routing;
+    let delivery = raw.delivery.resolve();
     let mut destinations = BTreeMap::new();
     let mut destination_policies = BTreeMap::new();
     for (name, destination) in raw.destinations {
@@ -290,33 +218,22 @@ pub(super) fn server(path: &Path) -> Result<ServerConfig> {
                 "destinations: names must contain 1–64 ASCII letters, digits, underscores, or hyphens"
             );
         }
-        let field = format!("destinations.{name}");
         let (destination, overrides) = match destination {
             Destination::Pushover {
                 app_token,
                 user_key,
                 device,
-                config,
                 delivery,
-            } => {
-                let config = if let Some(config) = config {
-                    if app_token.is_some() || user_key.is_some() || device.is_some() {
-                        bail!("{field}: cannot combine config with flat Pushover fields");
-                    }
-                    config
-                } else {
-                    PushoverConfig {
-                        app_token: app_token.ok_or_else(|| {
-                            anyhow::anyhow!("{field}.app_token: required field is missing")
-                        })?,
-                        user_key: user_key.ok_or_else(|| {
-                            anyhow::anyhow!("{field}.user_key: required field is missing")
-                        })?,
+            } => (
+                DestinationConfig::Pushover {
+                    config: PushoverConfig {
+                        app_token,
+                        user_key,
                         device,
-                    }
-                };
-                (DestinationConfig::Pushover { config }, delivery)
-            }
+                    },
+                },
+                delivery,
+            ),
             Destination::Webhook {
                 url,
                 bearer_token,
@@ -328,28 +245,14 @@ pub(super) fn server(path: &Path) -> Result<ServerConfig> {
             destination_policies.insert(name, overrides.normalize(&delivery));
         }
     }
-    let legacy_pushover = raw.pushover.is_some();
-    if let Some(config) = raw.pushover {
-        if destinations.contains_key("pushover") {
-            bail!("destinations.pushover: conflicts with legacy pushover");
-        }
-        destinations.insert("pushover".into(), DestinationConfig::Pushover { config });
-    }
-    let defaults = routing.default.unwrap_or_else(|| {
-        if legacy_pushover {
-            vec!["pushover".into()]
-        } else {
-            vec![]
-        }
-    });
     Ok(ServerConfig {
-        host,
-        port,
+        host: listen.ip(),
+        port: listen.port(),
         api_token,
         database: storage.database,
         delivery,
         destinations,
-        default_destinations: defaults,
+        default_destinations: routing.default,
         routes: routing.severity,
         retention: RetentionConfig {
             deliveries: storage.retention.deliveries.map(|v| v.0),
@@ -359,17 +262,11 @@ pub(super) fn server(path: &Path) -> Result<ServerConfig> {
     })
 }
 #[derive(Deserialize)]
-#[serde(untagged)]
-enum Timeout {
-    Number(f64),
-    Text(Seconds),
-}
-#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Client {
     base_url: Option<String>,
     api_token: Secret,
-    timeout: Option<Timeout>,
+    timeout: Option<Seconds>,
 }
 pub(super) fn client(path: &Path) -> Result<ClientConfig> {
     let raw: Client = read(path)?;
@@ -378,10 +275,6 @@ pub(super) fn client(path: &Path) -> Result<ClientConfig> {
             .base_url
             .unwrap_or_else(|| "http://127.0.0.1:8000".into()),
         api_token: raw.api_token,
-        timeout: match raw.timeout {
-            Some(Timeout::Number(value)) => value,
-            Some(Timeout::Text(value)) => value.0 as f64,
-            None => 15.0,
-        },
+        timeout: raw.timeout.map_or(15.0, |value| value.0 as f64),
     })
 }

@@ -9,7 +9,7 @@ import threading
 import time
 
 import pytest
-from flare_client import AsyncClient, Client, DecodeError, HTTPError, TransportError
+from flares_client import AsyncClient, Client, DecodeError, HTTPError, TransportError
 from test_clients import ROOT, shell
 
 
@@ -57,9 +57,9 @@ def responder():
             state,
             {
                 **os.environ,
-                "FLARE_BASE_URL": f"http://127.0.0.1:{server.server_port}",
-                "FLARE_API_TOKEN": "secret-token",
-                "FLARE_TIMEOUT": "0.05",
+                "FLARES_BASE_URL": f"http://127.0.0.1:{server.server_port}",
+                "FLARES_API_TOKEN": "secret-token",
+                "FLARES_TIMEOUT": "0.05",
             },
         )
     finally:
@@ -124,7 +124,7 @@ def test_failure_does_not_retry_or_leak_secrets(responder, backend, op, mode, ki
                 assert error.value.timed_out == (mode in ("timeout", "body_timeout"))
 
         if backend == "python":
-            with Client(env["FLARE_BASE_URL"], env["FLARE_API_TOKEN"], timeout=0.05) as client:
+            with Client(env["FLARES_BASE_URL"], env["FLARES_API_TOKEN"], timeout=0.05) as client:
                 with pytest.raises(error_type) as error:
                     getattr(client, op)()
                 check_error(error)
@@ -132,7 +132,7 @@ def test_failure_does_not_retry_or_leak_secrets(responder, backend, op, mode, ki
 
             async def check():
                 async with AsyncClient(
-                    env["FLARE_BASE_URL"], env["FLARE_API_TOKEN"], timeout=0.05
+                    env["FLARES_BASE_URL"], env["FLARES_API_TOKEN"], timeout=0.05
                 ) as client:
                     with pytest.raises(error_type) as error:
                         await getattr(client, op)()

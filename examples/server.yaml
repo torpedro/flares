@@ -1,12 +1,12 @@
-# Copy to server.yaml. Run: flare config check --config server.yaml
+# Copy to server.yaml. Run: flares config check --config server.yaml
 server:
   listen: 127.0.0.1:8000
   api_token: replace-with-a-long-random-shared-token
-  # api_token: {env: FLARE_API_TOKEN}
-  # api_token: {file: /run/secrets/flare-api-token}
+  # api_token: {env: FLARES_API_TOKEN}
+  # api_token: {file: /run/secrets/flares-api-token}
 
 storage:
-  database: flare.sqlite3  # relative to this configuration file
+  database: flares.sqlite3  # relative to this configuration file
   retention:
     deliveries: null       # keep completed delivery history indefinitely
     idempotency_keys: null # keys pin delivery records until they expire
@@ -33,7 +33,7 @@ destinations: {}
 #     device: phone
 #   audit:
 #     type: webhook
-#     url: https://hooks.example.com/flare
+#     url: https://hooks.example.com/flares
 #     bearer_token: {env: WEBHOOK_TOKEN}
 #     delivery:
 #       retry:

@@ -5,28 +5,28 @@ The server and CLI read YAML files. SDK configuration is unchanged: clients acce
 ## Validate and inspect
 
 ```sh
-flare config check --config server.yaml
-flare config show --config server.yaml
-flare config show --config server.yaml --json
-flare config check --client --config client.yaml
-flare config show --client --config client.yaml
+flares config check --config server.yaml
+flares config show --config server.yaml
+flares config show --config server.yaml --json
+flares config check --client --config client.yaml
+flares config show --client --config client.yaml
 ```
 
 `check` validates types, values, secret references, and routing. It reads the config and referenced secret files/environment variables; it does not create directories, open a database, bind a port, or contact destinations. It returns exit 0 for success or 1 for an error. `--json` produces machine-readable output. Server config is the default; use `--client` to select the client schema and default filename.
 
 `show` performs the same validation and prints effective settings, including defaults, resolved database paths, and inherited destination retry policies. Credentials and webhook URLs are always `[REDACTED]`. This is diagnostic output, not a deployable config containing credentials.
 
-Validation errors include a field path and a YAML line/column for parsing errors when available. Semantic errors identify the field and constraint, for example `delivery.retry.max_delay: must be at least base_delay`. Parser source excerpts and secret values are never printed. Unknown fields and conflicting old/new aliases are rejected.
+Validation errors include a field path and a YAML line/column for parsing errors when available. Semantic errors identify the field and constraint, for example `delivery.retry.max_delay: must be at least base_delay`. Parser source excerpts and secret values are never printed. Unknown fields and legacy aliases are rejected.
 
 ## Server format
 
 ```yaml
 server:
   listen: 127.0.0.1:8000
-  api_token: {env: FLARE_API_TOKEN}
+  api_token: {env: FLARES_API_TOKEN}
 
 storage:
-  database: flare.sqlite3
+  database: flares.sqlite3
   retention:
     deliveries: 30d
     idempotency_keys: 90d
@@ -49,7 +49,7 @@ destinations:
     user_key: {file: /run/secrets/pushover-user-key}
   audit:
     type: webhook
-    url: https://hooks.example.com/flare
+    url: https://hooks.example.com/flares
     bearer_token: {env: WEBHOOK_TOKEN}
     delivery:
       retry:
@@ -68,7 +68,7 @@ routing:
 
 The example above opts into retries and retention. The distributed example file explicitly shows the actual defaults, including one attempt and indefinite retention.
 
-`server.listen` is an IP address and port; IPv6 uses brackets, such as `'[::1]:8000'`. Its default is `127.0.0.1:8000`. The token is required. Database paths default to `flare.sqlite3` and resolve relative to the config file, never the working directory.
+`server.listen` is an IP address and port; IPv6 uses brackets, such as `'[::1]:8000'`. Its default is `127.0.0.1:8000`. The token is required. Database paths default to `flares.sqlite3` and resolve relative to the config file, never the working directory.
 
 ### Secrets
 
@@ -76,15 +76,15 @@ Each secret accepts exactly one of these forms:
 
 ```yaml
 api_token: literal-value
-api_token: {env: FLARE_API_TOKEN}
-api_token: {file: /run/secrets/flare-api-token}
+api_token: {env: FLARES_API_TOKEN}
+api_token: {file: /run/secrets/flares-api-token}
 ```
 
 This applies to server/client API tokens, Pushover credentials, webhook bearer tokens, and webhook URLs. References resolve once at startup or config checking; missing variables/files fail validation. File references resolve relative to the config file and strip trailing CR/LF characters, allowing files written by ordinary secret-management tools. Other whitespace is preserved and validated normally. There is no `${...}` interpolation in arbitrary YAML strings.
 
 ### Durations and defaults
 
-Durations accept a nonnegative integer followed by `s`, `m`, `h`, `d`, or `w`, such as `10s`, `30m`, or `1h`. Integers remain accepted as seconds. Server durations have whole-second precision. Client `timeout` also retains support for fractional numeric seconds, such as `0.5`.
+Durations accept a nonnegative integer followed by `s`, `m`, `h`, `d`, or `w`, such as `10s`, `30m`, or `1h`. Duration values must be strings with a unit, including client `timeout`. Bare numbers and fractional values are rejected; durations have whole-second precision.
 
 | Setting | Default | Constraint |
 | --- | --- | --- |
@@ -121,9 +121,9 @@ Cleanup runs at startup and approximately once per minute. It deletes only compl
 
 After a key expires, reusing it can create a new notification. Choose a key-retention period longer than your callers' retry window. With indefinite key retention, keyed delivery records remain indefinitely regardless of the delivery-retention setting. Retention applies to delivery history, not issue or heartbeat records; the active queue limit is not a database file-size cap. SQLite can reuse freed pages without immediately shrinking its file.
 
-## Migrating existing configurations
+## Updating old configuration files
 
-Existing configs still load. Convert aliases as follows:
+Only the structured format is accepted. Legacy fields are rejected, even when combined with valid modern fields. Convert old files before starting the service:
 
 | Legacy | Preferred form |
 | --- | --- |
@@ -140,6 +140,6 @@ Existing configs still load. Convert aliases as follows:
 | `delivery.rate_limit_per_minute` | `delivery.rate_limit: {attempts: N, window: 1m}` |
 | `delivery.group_window_seconds` | `delivery.group_window` |
 
-Do not specify both forms of the same section or setting. Legacy top-level Pushover still becomes the default destination when the default list is omitted. **An explicit `default_destinations: []` now stays empty**, correcting the old implicit fallback. The default queue limit is 10000 for both formats; use 0 if an existing installation requires an unbounded queue.
+Set `routing.default` explicitly to enable notifications; omitted or empty defaults send nowhere. Pushover credentials must be directly beneath `type: pushover`, without a `config` wrapper. Convert numeric durations to strings such as `30s`; this also applies to client `timeout`. Run `flares config check` (or `--client`) after editing.
 
 Existing databases migrate automatically. Legacy records begin their retention age at migration so enabling cleanup does not immediately discard old deliveries or keys. Existing per-destination schedules, grouping windows, and idempotency mappings survive subsequent restarts. If you migrate top-level Pushover to a named destination, keep its name `pushover` so already queued jobs continue to resolve it.

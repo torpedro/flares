@@ -1,6 +1,6 @@
-# Flare
+# Flares
 
-A Rust HTTP service and command-line client for tracking issues by ID, with SQLite persistence, Pushover and webhook notifications, and heartbeat monitoring. One `flare` binary provides both the server and client; no Python runtime is needed.
+A Rust HTTP service and command-line client for tracking issues by ID, with SQLite persistence, Pushover and webhook notifications, and heartbeat monitoring. One `flares` binary provides both the server and client; no Python runtime is needed.
 
 ## Build and run
 
@@ -15,19 +15,19 @@ cp examples/client.yaml client.yaml
 Edit the YAML files before starting. Set a shared API token in both files. To enable notifications, define a destination under `destinations` and select it in `routing.default`. Pushover requires an application token and user/group key from [Pushover](https://pushover.net/api). An explicit empty routing list disables notifications.
 
 ```sh
-./target/release/flare config check --config server.yaml
-./target/release/flare serve --config server.yaml
+./target/release/flares config check --config server.yaml
+./target/release/flares serve --config server.yaml
 ```
 
 In another terminal:
 
 ```sh
-./target/release/flare --config client.yaml open disk-space \
+./target/release/flares --config client.yaml open disk-space \
   --title 'Disk space low' --message 'Less than 5% free on the backup server.'
-./target/release/flare get disk-space
-./target/release/flare list --status open
-./target/release/flare close disk-space
-./target/release/flare --json open disk-space
+./target/release/flares get disk-space
+./target/release/flares list --status open
+./target/release/flares close disk-space
+./target/release/flares --json open disk-space
 ```
 
 Configuration defaults to `server.yaml` for `serve` and `config` commands, and `client.yaml` for client commands (including `config --client`). Global `--config` and `--json` options work before or after the command. `cargo run --locked -- …` also works during development. To install the binary locally, run `cargo install --path . --locked`.
@@ -39,9 +39,9 @@ Server YAML:
 ```yaml
 server:
   listen: 127.0.0.1:8000
-  api_token: {env: FLARE_API_TOKEN}
+  api_token: {env: FLARES_API_TOKEN}
 storage:
-  database: flare.sqlite3       # relative to the YAML file's directory
+  database: flares.sqlite3       # relative to the YAML file's directory
 destinations:
   phone:
     type: pushover
@@ -54,19 +54,19 @@ routing:
 Secrets accept literal strings, `{env: VARIABLE}`, or `{file: PATH}` references. Pushover requires both 30-character ASCII alphanumeric credentials and accepts an optional `device`. Unknown fields, missing secrets, invalid values, and unknown routing destinations fail validation. The server creates the database and its parent directory only when serving.
 
 ```sh
-flare config check --config server.yaml
-flare config show --config server.yaml --json  # effective defaults; secrets redacted
+flares config check --config server.yaml
+flares config show --config server.yaml --json  # effective defaults; secrets redacted
 ```
 
 Client YAML:
 
 ```yaml
 base_url: http://127.0.0.1:8000
-api_token: {env: FLARE_API_TOKEN}
+api_token: {env: FLARES_API_TOKEN}
 timeout: 15s
 ```
 
-Use `flare config check --client` to validate client settings. Validation does not open the database or contact providers. See the [configuration guide](docs/configuration.md) for all defaults, duration syntax, overrides, retention, and legacy migration. Existing YAML formats remain supported; explicit empty default routes now remain disabled.
+Use `flares config check --client` to validate client settings. Validation does not open the database or contact providers. See the [configuration guide](docs/configuration.md) for all defaults, duration syntax, overrides, retention, and legacy migration. Only the structured YAML format is accepted; legacy fields and numeric durations are rejected.
 
 Keep real configuration files private; `server.yaml` and `client.yaml` are gitignored. For remote use, terminate HTTPS at a reverse proxy and point clients to its HTTPS URL. The built-in listener serves HTTP and defaults to localhost. Run one service instance per database; SQLite is bundled into the binary. SIGINT and SIGTERM stop the listener gracefully.
 
@@ -117,16 +117,16 @@ Successful mutations, including no-ops and saved openings with notification fail
 
 Errors use `{"detail":"…"}`: 401 for authentication failures, 404 for missing issues, 422 for invalid field values/types, and 503 for unavailable storage. Invalid JSON syntax returns 400, non-JSON content types 415, and bodies over 32 KiB 413. Storage/transport failures can occur after a transition was committed; inspect the issue when an outcome is uncertain.
 
-For example, with `FLARE_API_TOKEN` set to the shared token in your shell:
+For example, with `FLARES_API_TOKEN` set to the shared token in your shell:
 
 ```sh
 curl --fail-with-body http://127.0.0.1:8000/v1/issues/open \
-  -H "Authorization: Bearer $FLARE_API_TOKEN" \
+  -H "Authorization: Bearer $FLARES_API_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"id":"disk-space","title":"Disk space low"}'
 
 curl --fail-with-body http://127.0.0.1:8000/v1/issues/close \
-  -H "Authorization: Bearer $FLARE_API_TOKEN" \
+  -H "Authorization: Bearer $FLARES_API_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"id":"disk-space"}'
 ```
@@ -134,7 +134,7 @@ curl --fail-with-body http://127.0.0.1:8000/v1/issues/close \
 ## One-shot alerts
 
 ```sh
-flare alert --title 'Backup complete' --message 'All files copied.' \
+flares alert --title 'Backup complete' --message 'All files copied.' \
   --severity info --idempotency-key backup-2026-09-15
 ```
 
@@ -142,7 +142,7 @@ Equivalent HTTP request:
 
 ```sh
 curl --fail-with-body http://127.0.0.1:8000/v1/alerts \
-  -H "Authorization: Bearer $FLARE_API_TOKEN" \
+  -H "Authorization: Bearer $FLARES_API_TOKEN" \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: backup-2026-09-15' \
   -d '{"title":"Backup complete","message":"All files copied.","severity":"info"}'
@@ -156,7 +156,7 @@ The HTTP 200 response contains `delivery_id` and `notification`, for example:
 {"delivery_id":42,"notification":{"status":"sent","error":null}}
 ```
 
-`sent` means every selected destination accepted the notification. `pending` means it is queued, being sent, grouped, rate limited, or awaiting a retry. `failed` means the attempt limit was reached for at least one destination; `error` gives a sanitized explanation. `not_attempted` means the route has no destinations. Inspect individual outcomes with `flare delivery 42` or authenticated `GET /v1/deliveries/42`.
+`sent` means every selected destination accepted the notification. `pending` means it is queued, being sent, grouped, rate limited, or awaiting a retry. `failed` means the attempt limit was reached for at least one destination; `error` gives a sanitized explanation. `not_attempted` means the route has no destinations. Inspect individual outcomes with `flares delivery 42` or authenticated `GET /v1/deliveries/42`.
 
 `Idempotency-Key` is optional and accepts 1–200 printable ASCII characters without spaces. Reusing a key with the same parsed request returns the same delivery ID and its current outcome, including after restart; reusing it with different content returns HTTP 409. Keys are retained indefinitely by default; optional `storage.retention.idempotency_keys` sets their lifetime. Reusing a key after expiration can create a new notification. Without a key, each request creates a new delivery. Reuse the same key after a timeout or lost response.
 
@@ -183,7 +183,7 @@ delivery:
 destinations:
   audit:
     type: webhook
-    url: https://hooks.example.com/flare
+    url: https://hooks.example.com/flares
     bearer_token: {env: WEBHOOK_TOKEN}
     delivery:
       retry: {max_attempts: 5}
@@ -203,12 +203,12 @@ routing:
 
 Severity is `info`, `warning` (default), or `critical`. A route replaces the default destination list for that severity; an empty list explicitly disables it. Named destinations are used only when listed in defaults or a route. Pushover priorities are respectively -1, 0, and 1; critical alerts do not use Pushover's repeating emergency mode.
 
-Webhooks receive JSON containing `id` (delivery ID), `title`, `message`, `severity`, `kind`, and `count`. Optional bearer authentication and a stable `Idempotency-Key: flare-delivery-<id>` header accompany each attempt. The receiving service can deduplicate retries using that key; use separate key scopes for separate Flare databases. Any HTTP 2xx response succeeds. Redirects are not followed, provider response bodies are not exposed, and HTTP requests have a ten-second deadline. Configure HTTPS for remote webhook destinations. URLs and credentials remain in server configuration and are excluded from delivery records and logs.
+Webhooks receive JSON containing `id` (delivery ID), `title`, `message`, `severity`, `kind`, and `count`. Optional bearer authentication and a stable `Idempotency-Key: flare-delivery-<id>` header accompany each attempt. The receiving service can deduplicate retries using that key; use separate key scopes for separate Flares databases. Any HTTP 2xx response succeeds. Redirects are not followed, provider response bodies are not exposed, and HTTP requests have a ten-second deadline. Configure HTTPS for remote webhook destinations. URLs and credentials remain in server configuration and are excluded from delivery records and logs.
 
 ## Issue reminders and resolution notifications
 
 ```sh
-flare open disk-space --title 'Disk space low' --message 'Less than 5% free.' \
+flares open disk-space --title 'Disk space low' --message 'Less than 5% free.' \
   --severity critical --remind-every-seconds 3600 --notify-on-resolution
 ```
 
@@ -221,11 +221,11 @@ The scheduler creates reminders while the issue remains open, at most one per ch
 Register an expected check-in, then call `beat` after each successful run:
 
 ```sh
-flare heartbeat add nightly-backup --title 'Nightly backup' \
+flares heartbeat add nightly-backup --title 'Nightly backup' \
   --interval-seconds 86400 --grace-seconds 3600 --severity critical --notify-on-recovery
-flare heartbeat beat nightly-backup
-flare heartbeat list
-flare heartbeat remove nightly-backup
+flares heartbeat beat nightly-backup
+flares heartbeat list
+flares heartbeat remove nightly-backup
 ```
 
 | Method | Endpoint | Behaviour |
@@ -273,11 +273,11 @@ heartbeats, health, readiness, and metrics:
 
 | Client | Package | Documentation |
 | --- | --- | --- |
-| Rust (async) | `flare-client`, with shared `flare-types` | [Rust client](clients/rust/README.md) |
-| Python (sync and async) | `flare-client`, imported as `flare_client` | [Python client](clients/python/README.md) |
-| Bash | Sourceable `flare.sh`, using curl and jq | [Bash client](clients/bash/README.md) |
+| Rust (async) | `flares-client`, with shared `flares-types` | [Rust client](clients/rust/README.md) |
+| Python (sync and async) | `flares-client`, imported as `flares_client` | [Python client](clients/python/README.md) |
+| Bash | Sourceable `flares.sh`, using curl and jq | [Bash client](clients/bash/README.md) |
 
-The root Cargo package remains the server and CLI. `crates/flare-types` contains the
+The root Cargo package remains the server and CLI. `crates/flares-types` contains the
 wire models, with opt-in OpenAPI and CLI derives. `clients/rust` has no server or
 database dependencies. Python packaging and development use uv. Clients take their
 URL, bearer token, and timeout directly; server and CLI YAML configuration is unchanged.
@@ -295,7 +295,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 cargo build --workspace --examples --locked
-cargo build --bin flare --locked
+cargo build --bin flares --locked
 uv sync --project clients/python --locked
 uv run --project clients/python ruff check --config clients/python/pyproject.toml clients/python tests/contract scripts
 uv run --project clients/python ruff format --check --config clients/python/pyproject.toml clients/python tests/contract scripts
@@ -314,7 +314,7 @@ CI also runs ShellCheck, detects OpenAPI/version drift, and builds package artif
 
 The server and all clients share one version and `vX.Y.Z` tag. Update the workspace
 version, local Cargo dependency versions, Python package and `__version__`, Bash
-`FLARE_CLIENT_VERSION`, both lockfiles, and the changelog together. Regenerate
+`FLARES_CLIENT_VERSION`, both lockfiles, and the changelog together. Regenerate
 `api/openapi.json` using the command in [api/README.md](api/README.md).
 
 ```sh
@@ -326,6 +326,16 @@ The build script creates a native server/CLI archive, two Rust `.crate` files,
 a Python wheel and source distribution, and a Bash archive in `dist/`. It verifies
 the extracted Rust packages without server dependencies and imports the installed
 Python wheel in isolation. CI uploads these artifacts on Linux; nothing is published
-automatically. Publish `flare-types` before `flare-client` when releasing to crates.io;
+automatically. Publish `flares-types` before `flares-client` when releasing to crates.io;
 Python and Bash have separate artifacts from the same tag. Record release changes
 in [CHANGELOG.md](CHANGELOG.md).
+
+### Upgrading from Flare
+
+The executable is now `flares`. Python imports use `flares_client`; Bash users source
+`flares.sh`, call `flares_*` functions, and set `FLARES_*` variables. Update secret
+environment references in your YAML if you rename those variables. Metrics now use
+the `flares_` prefix. For an existing installation, explicitly set `storage.database`
+to the existing database (for example, `flare.sqlite3`) before starting: the new
+default is `flares.sqlite3`. Webhook idempotency keys keep their original
+`flare-delivery-` prefix to preserve deduplication across upgrades.

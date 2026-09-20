@@ -9,7 +9,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use flare::{api, models::*, notifications::Notifier, store::Store};
+use flares::{api, models::*, notifications::Notifier, store::Store};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::sync::Semaphore;
@@ -891,7 +891,7 @@ async fn health_readiness_metrics_and_heartbeat_endpoints() {
             .to_vec(),
     )
     .unwrap();
-    assert!(body.contains("flare_notification_attempts_total 0"));
+    assert!(body.contains("flares_notification_attempts_total 0"));
     // Liveness survives a database failure; readiness reports it.
     rusqlite::Connection::open(h._dir.path().join("issues.sqlite3"))
         .unwrap()

@@ -1,4 +1,4 @@
-"""Run identical scenarios against a real Flare process using each packaged client."""
+"""Run identical scenarios against a real Flares process using each packaged client."""
 
 import asyncio
 import contextlib
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from flare_client import AsyncClient, Client, HTTPError
+from flares_client import AsyncClient, Client, HTTPError
 
 ROOT = Path(__file__).resolve().parents[2]
 SCENARIOS = json.loads(Path(__file__).with_name("scenarios.json").read_text())
@@ -38,14 +38,15 @@ def server(tmp_path):
         port = reserved.getsockname()[1]
     config = tmp_path / "server.yaml"
     config.write_text(
-        f"port: {port}\napi_token: contract-token\ndatabase: issues.sqlite3\n"
-        "delivery:\n  group_window_seconds: 60\n  rate_limit_per_minute: 0\n"
+        f"server:\n  listen: 127.0.0.1:{port}\n  api_token: contract-token\n"
+        "storage: {database: issues.sqlite3}\n"
+        "delivery:\n  group_window: 60s\n  rate_limit: {attempts: 0, window: 1m}\n"
         "destinations:\n  test:\n    type: webhook\n"
         f"    url: http://127.0.0.1:{provider.server_port}/\n"
-        "default_destinations: [test]\n"
+        "routing: {default: [test]}\n"
     )
     process = subprocess.Popen(
-        [str(ROOT / "target/debug/flare"), "serve", "--config", str(config)],
+        [str(ROOT / "target/debug/flares"), "serve", "--config", str(config)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -53,7 +54,7 @@ def server(tmp_path):
     try:
         with httpx.Client(timeout=0.5) as probe:
             for _ in range(100):
-                assert process.poll() is None, "Flare exited during startup"
+                assert process.poll() is None, "Flares exited during startup"
                 try:
                     if probe.get(url + "/readyz").is_success:
                         break
@@ -61,8 +62,8 @@ def server(tmp_path):
                     pass
                 time.sleep(0.05)
             else:
-                pytest.fail("Flare did not become ready")
-        yield {**os.environ, "FLARE_BASE_URL": url, "FLARE_API_TOKEN": "contract-token"}
+                pytest.fail("Flares did not become ready")
+        yield {**os.environ, "FLARES_BASE_URL": url, "FLARES_API_TOKEN": "contract-token"}
     finally:
         process.terminate()
         try:
@@ -130,8 +131,8 @@ def shell(env, op, args):
             "-c",
             'source "$1"; shift; "$@"',
             "contract",
-            str(ROOT / "clients/bash/flare.sh"),
-            f"flare_{op}",
+            str(ROOT / "clients/bash/flares.sh"),
+            f"flares_{op}",
             *argv,
         ],
         env=env,
@@ -186,15 +187,15 @@ def test_bash_named_options(server):
 @pytest.mark.parametrize(
     "argv",
     [
-        ["flare_open_issue"],
-        ["flare_open_issue", "id", "--title"],
-        ["flare_open_issue", "id", "--unknown"],
-        ["flare_open_issue", "id", "--remind-every-seconds", "1.5"],
-        ["flare_open_issue", "id", "--remind-every-seconds", "0"],
-        ["flare_alert", "title"],
-        ["flare_alert", "title", "message", "--group-key"],
-        ["flare_alert", "title", "message", "--severity", "invalid"],
-        ["flare_alert", "title", "message", "--idempotency-key", ""],
+        ["flares_open_issue"],
+        ["flares_open_issue", "id", "--title"],
+        ["flares_open_issue", "id", "--unknown"],
+        ["flares_open_issue", "id", "--remind-every-seconds", "1.5"],
+        ["flares_open_issue", "id", "--remind-every-seconds", "0"],
+        ["flares_alert", "title"],
+        ["flares_alert", "title", "message", "--group-key"],
+        ["flares_alert", "title", "message", "--severity", "invalid"],
+        ["flares_alert", "title", "message", "--idempotency-key", ""],
     ],
 )
 def test_bash_argument_errors(argv):
@@ -204,9 +205,9 @@ def test_bash_argument_errors(argv):
             "-euo",
             "pipefail",
             "-c",
-            'source "$1"; shift; _flare_request() { exit 99; }; "$@"',
+            'source "$1"; shift; _flares_request() { exit 99; }; "$@"',
             "test",
-            str(ROOT / "clients/bash/flare.sh"),
+            str(ROOT / "clients/bash/flares.sh"),
             *argv,
         ],
         capture_output=True,
@@ -224,11 +225,11 @@ def test_shared_contract(server, backend):
     with contextlib.ExitStack() as stack:
         if backend == "python":
             client = stack.enter_context(
-                Client(server["FLARE_BASE_URL"], server["FLARE_API_TOKEN"])
+                Client(server["FLARES_BASE_URL"], server["FLARES_API_TOKEN"])
             )
         elif backend == "python_async":
             runner = stack.enter_context(asyncio.Runner())
-            client = AsyncClient(server["FLARE_BASE_URL"], server["FLARE_API_TOKEN"])
+            client = AsyncClient(server["FLARES_BASE_URL"], server["FLARES_API_TOKEN"])
             stack.callback(lambda: runner.run(client.aclose()))
         for step in SCENARIOS:
             op, args = step["op"], resolve(step["args"], saved)
@@ -281,7 +282,7 @@ def test_shared_contract(server, backend):
 
 @pytest.mark.parametrize("backend", ["rust", "python", "python_async", "bash"])
 def test_authentication_error(server, backend):
-    env = {**server, "FLARE_API_TOKEN": "wrong"}
+    env = {**server, "FLARES_API_TOKEN": "wrong"}
     if backend == "bash":
         output = shell(env, "list_issues", {})
         assert output.returncode == 1 and "401" in output.stderr
@@ -297,7 +298,7 @@ def test_authentication_error(server, backend):
         assert json.loads(output.stdout) == {"error": "http", "status": 401}
     elif backend == "python":
         with (
-            Client(env["FLARE_BASE_URL"], "wrong") as client,
+            Client(env["FLARES_BASE_URL"], "wrong") as client,
             pytest.raises(HTTPError) as error,
         ):
             client.list_issues()
@@ -305,7 +306,7 @@ def test_authentication_error(server, backend):
     else:
 
         async def check():
-            async with AsyncClient(env["FLARE_BASE_URL"], "wrong") as client:
+            async with AsyncClient(env["FLARES_BASE_URL"], "wrong") as client:
                 with pytest.raises(HTTPError) as error:
                     await client.list_issues()
                 assert error.value.status_code == 401

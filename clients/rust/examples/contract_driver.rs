@@ -1,5 +1,5 @@
 //! Adapter used by the shared contract suite, not an installed command.
-use flare_client::*;
+use flares_client::*;
 use serde_json::{Value, json};
 use std::io::Read;
 
@@ -65,10 +65,10 @@ async fn main() {
     std::io::stdin().read_to_string(&mut input).unwrap();
     let request: Value = serde_json::from_str(&input).unwrap();
     let client = ApiClient::with_timeout(
-        std::env::var("FLARE_BASE_URL").unwrap(),
-        std::env::var("FLARE_API_TOKEN").unwrap(),
+        std::env::var("FLARES_BASE_URL").unwrap(),
+        std::env::var("FLARES_API_TOKEN").unwrap(),
         std::time::Duration::from_secs_f64(
-            std::env::var("FLARE_TIMEOUT")
+            std::env::var("FLARES_TIMEOUT")
                 .unwrap_or("15".into())
                 .parse()
                 .unwrap(),

@@ -1,7 +1,7 @@
-"""Flare client library. HTTP success and notification delivery are separate outcomes."""
+"""Flares client library. HTTP success and notification delivery are separate outcomes."""
 
 from .client import AsyncClient, Client
-from .errors import DecodeError, FlareError, HTTPError, TransportError, ValidationError
+from .errors import DecodeError, FlaresError, HTTPError, TransportError, ValidationError
 from .models import (
     Alert,
     AlertResult,
@@ -24,7 +24,7 @@ __version__ = "0.1.0"
 __all__ = [
     "Client",
     "AsyncClient",
-    "FlareError",
+    "FlaresError",
     "ValidationError",
     "TransportError",
     "HTTPError",

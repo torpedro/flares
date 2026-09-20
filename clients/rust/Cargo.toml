@@ -1,13 +1,13 @@
 [package]
-name = "flare-client"
+name = "flares-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Async Rust HTTP client for Flare"
+description = "Async Rust HTTP client for Flares"
 readme = "README.md"
 
 [dependencies]
-flare-types = { path = "../../crates/flare-types", version = "0.1.0" }
+flares-types = { path = "../../crates/flares-types", version = "0.1.0" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
