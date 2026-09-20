@@ -59,7 +59,7 @@ jobs:
       - name: Test Bash client
         run: bash clients/bash/tests/source.sh
       - name: Run Python tests
-        run: uv run --project clients/python pytest -q
+        run: uv run --project clients/python pytest -q clients/python/tests tests/contract
       - name: Build release artifacts
         if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         run: uv run --project clients/python python scripts/build_artifacts.py
