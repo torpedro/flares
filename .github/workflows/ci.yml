@@ -42,6 +42,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Run tests
         run: cargo test --workspace --locked
+      - name: Verify package
+        run: cargo publish --workspace --dry-run --locked --registry crates-io
       - name: Build workspace
         run: cargo build --workspace --examples --locked && cargo build --bin flares --locked
       - name: Sync Python environment
