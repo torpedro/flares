@@ -327,7 +327,7 @@ checksum = "ef25905e51abafe4dcea6c15fec58c57b601cdbd0ee53d22ea1d3016c587d39b"
 
 [[package]]
 name = "flares"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -354,7 +354,7 @@ dependencies = [
 
 [[package]]
 name = "flares-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "flares-types",
  "reqwest",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "flares-types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "clap",

@@ -2,7 +2,7 @@
 # Source this file; requires Bash, curl, and jq. Never changes caller shell options.
 # Public version for callers and release tooling.
 # shellcheck disable=SC2034
-FLARES_CLIENT_VERSION=0.1.0
+FLARES_CLIENT_VERSION=0.1.1
 
 _flares_error() { printf '%s\n' "$*" >&2; return 1; }
 
