@@ -143,3 +143,13 @@ Only the structured format is accepted. Legacy fields are rejected, even when co
 Set `routing.default` explicitly to enable notifications; omitted or empty defaults send nowhere. Pushover credentials must be directly beneath `type: pushover`, without a `config` wrapper. Convert numeric durations to strings such as `30s`; this also applies to client `timeout`. Run `flares config check` (or `--client`) after editing.
 
 Existing databases migrate automatically. Legacy records begin their retention age at migration so enabling cleanup does not immediately discard old deliveries or keys. Existing per-destination schedules, grouping windows, and idempotency mappings survive subsequent restarts. If you migrate top-level Pushover to a named destination, keep its name `pushover` so already queued jobs continue to resolve it.
+
+## Upgrading from Flare
+
+The executable is now `flares`. Python imports use `flares_client`; Bash users source
+`flares.sh`, call `flares_*` functions, and set `FLARES_*` variables. Update secret
+environment references in your YAML if you rename those variables. Metrics now use
+the `flares_` prefix. For an existing installation, explicitly set `storage.database`
+to the existing database (for example, `flare.sqlite3`) before starting: the new
+default is `flares.sqlite3`. Webhook idempotency keys keep their original
+`flare-delivery-` prefix to preserve deduplication across upgrades.

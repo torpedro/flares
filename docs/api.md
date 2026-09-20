@@ -1,0 +1,196 @@
+# API and delivery behavior
+
+All `/v1` operations and `/metrics` require `Authorization: Bearer <api_token>`. Bodies and responses are JSON. The generated OpenAPI document is available at `/openapi.json` without authentication; it contains schemas and the bearer security definition, not configuration or issue data.
+
+| Method | Endpoint | Input / behavior |
+| --- | --- | --- |
+| POST | `/v1/alerts` | `{"title":"Backup complete","message":"All files copied."}`; sends a one-shot notification. |
+| POST | `/v1/issues/open` | `{"id":"disk-space","title":"Optional title","message":"Optional message"}` |
+| POST | `/v1/issues/close` | `{"id":"disk-space"}` |
+| GET | `/v1/issues/{id}` | Fetch an issue by URL-encoded ID. |
+| GET | `/v1/issue?id=…` | Equivalent lookup using query encoding; the CLI uses this to preserve arbitrary IDs. |
+| GET | `/v1/issues` | List; accepts `status=open` or `closed`, `limit` (1–1000; default 100), and `offset` (default 0). |
+
+IDs are case-sensitive strings of 1–200 Unicode characters. They are stored verbatim. Use the query lookup for IDs containing dot path segments such as `.` or `a/../b`, which URL libraries/proxies may normalize in a path. Titles must contain 1–250 characters and messages 1–1024 characters, matching [Pushover's limits](https://pushover.net/api#limits). Fields are optional or nullable; empty strings are rejected.
+
+Opening a new issue sets its state to `open`. Closing sets its state to `closed`. Opening a closed issue reopens it and increments its `opening_count`. Every actual opening uses that call's content, defaulting the title to the ID and the message to `Issue {id} opened.` or `Issue {id} reopened.` An already-open call does not update content, timestamps, or notifications. An already-closed call also does nothing. Closing or fetching an unknown issue ID returns 404.
+
+Successful mutations, including no-ops and saved openings with notification failures, return HTTP 200:
+
+```json
+{
+  "delivery_id": 42,
+  "issue": {
+    "severity": "warning",
+    "remind_every_seconds": null,
+    "notify_on_resolution": false,
+    "delivery_id": 42,
+    "id": "disk-space",
+    "status": "open",
+    "title": "disk-space",
+    "message": "Issue disk-space opened.",
+    "created_at": "2026-09-14T12:00:00Z",
+    "updated_at": "2026-09-14T12:00:00Z",
+    "opened_at": "2026-09-14T12:00:00Z",
+    "closed_at": null,
+    "opening_count": 1,
+    "notification": {"status": "sent", "error": null}
+  },
+  "changed": true,
+  "notification": {"status": "sent", "error": null}
+}
+```
+
+`issue.notification` is the latest opening's recorded outcome. The top-level `notification` describes the attempt made by this request, so duplicate-open responses use `not_attempted`, as do closes without a resolution notification. Reads return the issue object directly. Lists return `{"items":[…],"total":1,"limit":100,"offset":0}`, ordered by `updated_at` descending and ID ascending for ties. Timestamps use UTC. `closed_at` retains the latest closing time after reopening. Mutation responses describe the transition's snapshot; a concurrent request may subsequently change the issue.
+
+Errors use `{"detail":"…"}`: 401 for authentication failures, 404 for missing issues, 422 for invalid field values/types, and 503 for unavailable storage. Invalid JSON syntax returns 400, non-JSON content types 415, and bodies over 32 KiB 413. Storage/transport failures can occur after a transition was committed; inspect the issue when an outcome is uncertain.
+
+For example, with `FLARES_API_TOKEN` set to the shared token in your shell:
+
+```sh
+curl --fail-with-body http://127.0.0.1:8000/v1/issues/open \
+  -H "Authorization: Bearer $FLARES_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"disk-space","title":"Disk space low"}'
+
+curl --fail-with-body http://127.0.0.1:8000/v1/issues/close \
+  -H "Authorization: Bearer $FLARES_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"disk-space"}'
+```
+
+## One-shot alerts
+
+```sh
+flares alert --title 'Backup complete' --message 'All files copied.' \
+  --severity info --idempotency-key backup-2026-09-15
+```
+
+Equivalent HTTP request:
+
+```sh
+curl --fail-with-body http://127.0.0.1:8000/v1/alerts \
+  -H "Authorization: Bearer $FLARES_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: backup-2026-09-15' \
+  -d '{"title":"Backup complete","message":"All files copied.","severity":"info"}'
+```
+
+Both `title` (1–250 Unicode characters) and `message` (1–1024) are required. Empty/null values and unknown fields are rejected. Alerts have no issue ID or close operation. Their delivery history is stored separately from issues.
+
+The HTTP 200 response contains `delivery_id` and `notification`, for example:
+
+```json
+{"delivery_id":42,"notification":{"status":"sent","error":null}}
+```
+
+`sent` means every selected destination accepted the notification. `pending` means it is queued, being sent, grouped, rate limited, or awaiting a retry. `failed` means the attempt limit was reached for at least one destination; `error` gives a sanitized explanation. `not_attempted` means the route has no destinations. Inspect individual outcomes with `flares delivery 42` or authenticated `GET /v1/deliveries/42`.
+
+`Idempotency-Key` is optional and accepts 1–200 printable ASCII characters without spaces. Reusing a key with the same parsed request returns the same delivery ID and its current outcome, including after restart; reusing it with different content returns HTTP 409. Keys are retained indefinitely by default; optional `storage.retention.idempotency_keys` sets their lifetime. Reusing a key after expiration can create a new notification. Without a key, each request creates a new delivery. Reuse the same key after a timeout or lost response.
+
+### Grouping and rate limits
+
+Supply `group_key` in an alert body, or `--group-key backups`, to group alerts for `delivery.group_window` (default `30s`). Alerts with the same key, severity, and destinations share one delivery during the window. The window is fixed from the first alert and persisted separately from the next delivery attempt: rate limiting, retries, restarts, and configuration changes do not extend it. The notification contains the count and latest title/message, truncated to the provider's message limit. Idempotent retries do not increase the count. Set the window to `0s` to disable grouping. On upgrade, existing deliveries without a recorded grouping deadline remain queued but no longer accept additional alerts.
+
+`delivery.rate_limit` limits destination attempts across all alert types, including retries (default 120 attempts per `1m`; attempts 0 disables the limit). Fixed windows align to Unix time. Destinations can add their own retry and rate policies. Excess work stays queued without spending an attempt. Up to four deliveries run concurrently, with at most two requests per Pushover destination. The service reserves destination capacity before spending an attempt and starting the request deadline; waiting for capacity does not consume either.
+
+## Delivery configuration and routing
+
+Named destinations allow separate routing by severity. Retry fields can also be overridden per destination:
+
+```yaml
+delivery:
+  retry:
+    max_attempts: 3             # default 1; includes the initial attempt
+    base_delay: 10s
+    max_delay: 1h
+  rate_limit: {attempts: 120, window: 1m}
+  group_window: 30s
+  queue_limit: 10000
+
+destinations:
+  audit:
+    type: webhook
+    url: https://hooks.example.com/flares
+    bearer_token: {env: WEBHOOK_TOKEN}
+    delivery:
+      retry: {max_attempts: 5}
+      rate_limit: {attempts: 20, window: 1m}
+  urgent:
+    type: pushover
+    app_token: {env: PUSHOVER_APP_TOKEN}
+    user_key: {env: PUSHOVER_USER_KEY}
+    device: phone
+
+routing:
+  default: [audit]
+  severity:
+    critical: [audit, urgent]
+    info: []
+```
+
+Severity is `info`, `warning` (default), or `critical`. A route replaces the default destination list for that severity; an empty list explicitly disables it. Named destinations are used only when listed in defaults or a route. Pushover priorities are respectively -1, 0, and 1; critical alerts do not use Pushover's repeating emergency mode.
+
+Webhooks receive JSON containing `id` (delivery ID), `title`, `message`, `severity`, `kind`, and `count`. Optional bearer authentication and a stable `Idempotency-Key: flare-delivery-<id>` header accompany each attempt. The receiving service can deduplicate retries using that key; use separate key scopes for separate Flares databases. Any HTTP 2xx response succeeds. Redirects are not followed, provider response bodies are not exposed, and HTTP requests have a ten-second deadline. Configure HTTPS for remote webhook destinations. URLs and credentials remain in server configuration and are excluded from delivery records and logs.
+
+## Issue reminders and resolution notifications
+
+```sh
+flares open disk-space --title 'Disk space low' --message 'Less than 5% free.' \
+  --severity critical --remind-every-seconds 3600 --notify-on-resolution
+```
+
+The corresponding optional fields on `POST /v1/issues/open` are `severity`, `remind_every_seconds`, and `notify_on_resolution`. Reminder intervals accept 1–31536000 seconds. Reminders are disabled when the interval is omitted; resolution notifications default to false. An already-open request remains a no-op, including its settings. Reopening replaces the settings with those on the new request. `GET` and list responses expose the current settings and opening delivery ID.
+
+The scheduler creates reminders while the issue remains open, at most one per check; missed intervals during downtime are not replayed individually. Closing stops future reminders and optionally creates one resolution delivery. Repeated closes do not notify. Already queued deliveries remain eligible for delivery. Reminder and resolution outcomes are separate from the issue's latest opening outcome.
+
+## Heartbeat monitoring
+
+Register an expected check-in, then call `beat` after each successful run:
+
+```sh
+flares heartbeat add nightly-backup --title 'Nightly backup' \
+  --interval-seconds 86400 --grace-seconds 3600 --severity critical --notify-on-recovery
+flares heartbeat beat nightly-backup
+flares heartbeat list
+flares heartbeat remove nightly-backup
+```
+
+| Method | Endpoint | Behaviour |
+| --- | --- | --- |
+| POST | `/v1/heartbeats` | Create or replace a monitor with `id`, `title`, `interval_seconds`, optional `grace_seconds`, `severity`, and `notify_on_recovery`. |
+| POST | `/v1/heartbeats/check-in` | Reset the deadline using `{"id":"nightly-backup"}`. Unknown IDs return 404. |
+| GET | `/v1/heartbeats` | List monitors, including `last_seen`, `due_at` (Unix seconds), and `overdue`. |
+| DELETE | `/v1/heartbeat?id=nightly-backup` | Remove a monitor; query encoding supports arbitrary IDs. |
+
+Registration starts the deadline immediately and replacing a monitor resets its state. The deadline is the last check-in plus the interval and grace period. Intervals accept 1–31536000 seconds; grace accepts 0–31536000. The scheduler checks once per second and creates one missed-heartbeat delivery per outage. A later check-in resets the deadline and optionally queues a recovery notification. Monitor state, deadlines, and queued notifications survive restart. Removing a monitor stops future checks; existing queued notifications remain eligible for delivery.
+
+## Health and delivery visibility
+
+- `GET /healthz`: unauthenticated liveness; HTTP 200 while the HTTP service responds.
+- `GET /readyz`: unauthenticated database readiness; HTTP 200 if a database query succeeds, otherwise 503. It does not probe external providers.
+- `GET /metrics`: requires the shared bearer token; Prometheus text counters for destination attempts, sent/failed attempts, skipped deliveries, accumulated delivery latency, and queue depth. Counters survive restart.
+- `GET /v1/deliveries/{id}`: authenticated delivery details, destination outcomes, attempt counts, and next attempt time (Unix seconds).
+
+Structured tracing events record delivery ID, destination name, attempt number, outcome, and latency. Notification text and credentials are not logged. The generated OpenAPI document includes the API operations and schemas.
+
+## Durable delivery semantics
+
+Issue transitions and their delivery jobs commit in one SQLite transaction. Alert jobs and idempotency keys also commit together. The service tries immediately when work is due and capacity permits, and its background worker handles grouping, rate-limited work, retries, reminders, and heartbeat notifications.
+
+`delivery.retry.max_attempts` defaults to 1 to preserve the previous one-attempt policy; set it above 1 to enable retries. Failed destinations retry with exponential delays capped by `max_delay`. Destinations with recorded success are not sent again. Both queued jobs and incomplete jobs recover on startup, subject to the attempt limit. Requests may return `pending`; CLI exit 0 in that case means accepted, not delivered. Inspect the delivery later for its final outcome.
+
+Delivery is best effort with bounded retries, not exactly once. A provider may accept a message before a timeout or a crash prevents recording success, so a retry can duplicate it. A crash after reserving an attempt consumes that attempt even if the request was not sent. With no attempts left, the job fails rather than retrying indefinitely. Old database entries that predate durable jobs retain the earlier `unknown` outcome for interrupted notifications and cannot be replayed.
+
+Run one service instance per database. Delivery records and idempotency keys are retained indefinitely by default. Optional retention runs cleanup approximately once per minute, retaining active jobs and delivery records pinned by unexpired keys. The queue defaults to 10000 pending/running jobs; excess new work returns HTTP 503 without committing its associated issue transition. See [queue limits and retention](configuration.md#queue-limits-and-retention). A delivery uses the destination names selected when it was created and the current configuration for those names when sent. Removing a configured destination makes its queued attempts fail. Increasing retry limits affects queued jobs; completed failures are not automatically reopened. Disabled routes record `not_attempted` and enabling them later does not replay skipped notifications.
+
+CLI exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Successful command, accepted/queued delivery, or no-op. |
+| 1 | Argument, configuration, HTTP, or transport error. |
+| 2 | Alert or issue transition saved, but delivery failed. |
+
+`--json` returns the API result unchanged for successful calls and notification failures. Application errors produce `{"error":"…"}`; command-line parsing errors use the standard help/error text. A duplicate open succeeds with exit 0 even if the issue's previous notification failed. Use `get` to inspect historical outcomes.
+

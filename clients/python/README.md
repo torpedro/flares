@@ -26,4 +26,4 @@ Use `timeout=15.0` to customize HTTPX's network-operation timeouts. Keep a clien
 
 Catch `ValidationError`, `TransportError` (with `timed_out`), `HTTPError` (with `status_code`), or `DecodeError`; all inherit `FlaresError`. Error messages do not include secrets or provider response bodies. A successful HTTP response with notification status `failed` is a normal result, not an exception. `pending` means accepted, not delivered. Requests never retry or follow redirects automatically. Reuse an explicit alert idempotency key after an uncertain outcome.
 
-Development (from this directory): `uv sync --locked`, `uv run pytest tests`, `uv build`. Run the repository contract suite after building the server and Rust contract driver; see the root README.
+Development (from this directory): `uv sync --locked`, `uv run pytest tests`, `uv build`. Run the repository contract suite after building the server and Rust contract driver; see [Development](../../docs/development.md).
