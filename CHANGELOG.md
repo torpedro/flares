@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.2 - 2026-09-20
+
 - Add explicit YAML loading and default discovery to Rust and Python clients, using the same client format, secret references, and config-relative paths as the CLI.
 - Honor absolute `XDG_CONFIG_HOME` for server/client discovery, with HOME and system-directory fallbacks; include selected filenames in loading errors.
 
