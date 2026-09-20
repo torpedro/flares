@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Verify packaging of all three crates in CI on every run, and publish them with a single `cargo publish --workspace` in the release process.
+
 - Look up server and client configuration in `~/.config/flares`, then `/etc/flares`, instead of the current directory. `--config` remains an explicit override.
 
 - Upgrade rusqlite to 0.40.2, retaining bundled SQLite and enabling checked unsigned integer conversions for counts and rate windows.
