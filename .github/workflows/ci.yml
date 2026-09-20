@@ -55,7 +55,7 @@ jobs:
       - name: Check Python formatting
         run: uv run --project clients/python ruff format --check --config clients/python/pyproject.toml clients/python tests/contract scripts
       - name: Lint Bash client
-        run: shellcheck clients/bash/flares.sh clients/bash/tests/source.sh
+        run: shellcheck clients/bash/flares.sh clients/bash/tests/source.sh scripts/make_release.sh
       - name: Test Bash client
         run: bash clients/bash/tests/source.sh
       - name: Run Python tests

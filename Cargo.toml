@@ -8,6 +8,12 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/torpedro/flares"
 
+# Single source for the published versions of the workspace's own crates.
+# scripts/set_version.py rewrites these together with [workspace.package].version.
+[workspace.dependencies]
+flares-types = { path = "crates/flares-types", version = "0.1.0" }
+flares-client = { path = "clients/rust", version = "0.1.0" }
+
 [package]
 name = "flares"
 repository.workspace = true
@@ -18,8 +24,8 @@ license = "MIT"
 readme = "README.md"
 
 [dependencies]
-flares-types = { path = "crates/flares-types", version = "0.1.0", features = ["openapi", "cli"] }
-flares-client = { path = "clients/rust", version = "0.1.0" }
+flares-types = { workspace = true, features = ["openapi", "cli"] }
+flares-client = { workspace = true }
 anyhow = "1"
 async-trait = "0.1"
 axum = "0.8"

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `scripts/make_release.sh`, an interactive helper that bumps the version, updates the changelog, verifies packaging, and optionally commits, builds the release artifacts, publishes to crates.io and PyPI, and tags.
+
 - Verify packaging of all three crates in CI on every run, and publish them with a single `cargo publish --workspace` in the release process.
 
 - Look up server and client configuration in `~/.config/flares`, then `/etc/flares`, instead of the current directory. `--config` remains an explicit override.

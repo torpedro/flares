@@ -46,27 +46,40 @@ Document migration steps for breaking changes.
 ## 2. Prepare and test
 
 Start from the intended release branch with unrelated changes committed or set aside.
-Update the README, docs, and examples for any changed behavior. Update these together:
+Update the README, docs, and examples for any changed behavior. Make sure
+`CHANGELOG.md` records everything in this release under `## Unreleased`, including
+migration steps for breaking changes; those entries become the release notes.
 
-- `Cargo.toml`: workspace version and local dependency versions.
-- `clients/rust/Cargo.toml`: local `flares-types` dependency version.
-- `clients/python/pyproject.toml` and `src/flares_client/__init__.py` beneath it.
-- `clients/bash/flares.sh`: `FLARES_CLIENT_VERSION`.
-- `CHANGELOG.md`: move the `## Unreleased` entries under a dated version heading.
-  Those entries become the release notes.
-
-Refresh lockfiles and the API snapshot, then confirm every package agrees:
+Set the version everywhere in one step:
 
 ```bash
-cargo check --workspace
-uv lock --project clients/python
-cargo run --locked --example export_openapi > api/openapi.json
-uv run --project clients/python python scripts/check_versions.py
+./scripts/make_release.sh
 ```
 
-Commit all intended changes, push the commit, and wait for CI to pass. The working
-tree must be clean before publishing; don't use `--allow-dirty` to bypass Cargo's
-publishing checks.
+It shows the current version, offers the next patch/minor/major or a custom one,
+updates every file, offers to move the changelog entries under the new heading, and
+offers to commit. It then runs the packaging dry run, offers to build the release
+artifacts (step 3), publish the crates and the Python distributions (step 4), and tag
+(step 5), in that order, so you can drive the whole release from it or stop at any
+prompt.
+
+To set a version non-interactively instead:
+
+```bash
+uv run --project clients/python python scripts/set_version.py 0.1.0
+```
+
+That rewrites the workspace version and the published versions of the workspace's own
+crates in `Cargo.toml`, `__version__` in the Python client, and `FLARES_CLIENT_VERSION`
+in the Bash client. It then refreshes `Cargo.lock` and `clients/python/uv.lock`,
+regenerates `api/openapi.json`, and runs `scripts/check_versions.py` to confirm every
+package and the API agree. The workspace members and `clients/rust` inherit their
+versions and are not edited; `clients/python/pyproject.toml` reads its version from
+`__init__.py`. Run it from a clean working tree and review the diff.
+
+If you declined the script's commit prompt, commit all intended changes. Push the
+commit and wait for CI to pass. The working tree must be clean before publishing;
+don't use `--allow-dirty` to bypass Cargo's publishing checks.
 
 ## 3. Verify the package and build artifacts
 
@@ -109,8 +122,9 @@ waits for each to become available before publishing its consumers. If Cargo tim
 out waiting for the index, check crates.io before retrying: the upload may already
 have succeeded. Published versions cannot be overwritten.
 
-Then publish the Python distributions. In Bash, read the token without displaying it
-or putting it in shell history:
+Then publish the Python distributions. `make_release.sh` offers this directly after
+the crates, reading the token the same way. To do it by hand, read the token without
+displaying it or putting it in shell history:
 
 ```bash
 read -r -s -p 'PyPI token: ' UV_PUBLISH_TOKEN

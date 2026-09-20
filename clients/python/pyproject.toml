@@ -4,12 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "flares-client"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Synchronous and asynchronous HTTP clients for Flares"
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"
 dependencies = ["httpx>=0.28,<1", "pydantic>=2.10,<3"]
+
+[tool.hatch.version]
+path = "src/flares_client/__init__.py"
 
 [project.urls]
 Repository = "https://github.com/torpedro/flares"
