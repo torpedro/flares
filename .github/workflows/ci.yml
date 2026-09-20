@@ -1,21 +1,29 @@
 name: CI
+
 on:
   push:
   pull_request:
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-checks
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
-
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  test-and-package:
+  check:
+    name: Format, lint, test, and package
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -26,20 +34,39 @@ jobs:
           python-version: '3.11'
           enable-cache: true
           cache-dependency-glob: clients/python/uv.lock
-      - run: sudo apt-get update && sudo apt-get install -y jq shellcheck
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
-      - run: cargo build --workspace --examples --locked && cargo build --bin flares --locked
-      - run: uv sync --project clients/python --locked
-      - run: uv run --project clients/python python scripts/check_versions.py
-      - run: uv run --project clients/python ruff check --config clients/python/pyproject.toml clients/python tests/contract scripts
-      - run: uv run --project clients/python ruff format --check --config clients/python/pyproject.toml clients/python tests/contract scripts
-      - run: shellcheck clients/bash/flares.sh clients/bash/tests/source.sh
-      - run: bash clients/bash/tests/source.sh
-      - run: uv run --project clients/python pytest -q
-      - run: uv run --project clients/python python scripts/build_artifacts.py
+      - name: Install system tools
+        run: sudo apt-get update && sudo apt-get install -y jq shellcheck
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Run tests
+        run: cargo test --workspace --locked
+      - name: Build workspace
+        run: cargo build --workspace --examples --locked && cargo build --bin flares --locked
+      - name: Sync Python environment
+        run: uv sync --project clients/python --locked
+      - name: Check cross-language versions
+        run: uv run --project clients/python python scripts/check_versions.py
+      - name: Lint Python
+        run: uv run --project clients/python ruff check --config clients/python/pyproject.toml clients/python tests/contract scripts
+      - name: Check Python formatting
+        run: uv run --project clients/python ruff format --check --config clients/python/pyproject.toml clients/python tests/contract scripts
+      - name: Lint Bash client
+        run: shellcheck clients/bash/flares.sh clients/bash/tests/source.sh
+      - name: Test Bash client
+        run: bash clients/bash/tests/source.sh
+      - name: Run Python tests
+        run: uv run --project clients/python pytest -q
+      - name: Build release artifacts
         if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        run: uv run --project clients/python python scripts/build_artifacts.py
+      - name: Checksum release artifacts
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        run: |
+          cd dist
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
       - uses: actions/upload-artifact@v7
         if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         with:
