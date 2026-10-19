@@ -15,5 +15,5 @@ cli = ["dep:clap"]
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
-utoipa = { version = "5", features = ["chrono"], optional = true }
+utoipa = { version = "6", features = ["chrono"], optional = true }
 clap = { version = "4", features = ["derive"], optional = true }

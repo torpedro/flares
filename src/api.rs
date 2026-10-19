@@ -148,7 +148,7 @@ pub fn router_with_delivery(delivery: crate::delivery::DeliveryService, token: S
 /// Send a one-shot notification without creating or updating an issue.
 #[utoipa::path(post, path = "/v1/alerts", request_body = Alert,
     params(("Idempotency-Key" = Option<String>, Header, description = "Retry key; reuse with the same alert body")),
-    responses((status = 409, body = ErrorBody), (status = 200, body = AlertResult), (status = 401, body = ErrorBody), (status = 422, body = ErrorBody)),
+    responses((status = 409, body = ErrorBody, description = "Idempotency key already used for a different alert"), (status = 200, body = AlertResult, description = "Alert processed; see notification for the delivery outcome"), (status = 401, body = ErrorBody, description = "Missing or invalid bearer token"), (status = 422, body = ErrorBody, description = "Invalid alert body or Idempotency-Key header")),
     security(("bearer_token" = [])))]
 async fn send_alert(
     State(state): State<AppState>,
@@ -186,7 +186,7 @@ async fn send_alert(
 }
 
 #[utoipa::path(post, path = "/v1/issues/open", request_body = OpenIssue,
-    responses((status = 200, body = MutationResult), (status = 401, body = ErrorBody), (status = 422, body = ErrorBody)),
+    responses((status = 200, body = MutationResult, description = "Issue state after opening"), (status = 401, body = ErrorBody, description = "Missing or invalid bearer token"), (status = 422, body = ErrorBody, description = "Invalid issue body")),
     security(("bearer_token" = [])))]
 async fn open_issue(
     State(state): State<AppState>,
@@ -223,7 +223,7 @@ async fn open_issue(
 }
 
 #[utoipa::path(post, path = "/v1/issues/close", request_body = CloseIssue,
-    responses((status = 200, body = MutationResult), (status = 401, body = ErrorBody), (status = 404, body = ErrorBody), (status = 422, body = ErrorBody)),
+    responses((status = 200, body = MutationResult, description = "Issue state after closing"), (status = 401, body = ErrorBody, description = "Missing or invalid bearer token"), (status = 404, body = ErrorBody, description = "Issue not found"), (status = 422, body = ErrorBody, description = "Invalid issue ID")),
     security(("bearer_token" = [])))]
 async fn close_issue(
     State(state): State<AppState>,
@@ -258,7 +258,7 @@ async fn close_issue(
 }
 
 #[utoipa::path(get, path = "/v1/issues/{id}", params(("id" = String, Path, description = "URL-encoded issue ID")),
-    responses((status = 200, body = Issue), (status = 401, body = ErrorBody), (status = 404, body = ErrorBody)),
+    responses((status = 200, body = Issue, description = "Issue found"), (status = 401, body = ErrorBody, description = "Missing or invalid bearer token"), (status = 404, body = ErrorBody, description = "Issue not found")),
     security(("bearer_token" = [])))]
 async fn get_issue(
     State(state): State<AppState>,
@@ -276,13 +276,14 @@ async fn get_close_id(state: State<AppState>) -> Result<Json<Issue>, ApiError> {
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 #[serde(deny_unknown_fields)]
 struct LookupQuery {
     id: String,
 }
 
 #[utoipa::path(get, path = "/v1/issue", params(LookupQuery),
-    responses((status = 200, body = Issue), (status = 401, body = ErrorBody), (status = 404, body = ErrorBody)),
+    responses((status = 200, body = Issue, description = "Issue found"), (status = 401, body = ErrorBody, description = "Missing or invalid bearer token"), (status = 404, body = ErrorBody, description = "Issue not found")),
     security(("bearer_token" = [])))]
 async fn lookup_issue(
     state: State<AppState>,
@@ -293,7 +294,7 @@ async fn lookup_issue(
 }
 
 #[utoipa::path(get, path = "/v1/issues", params(ListQuery),
-    responses((status = 200, body = IssueList), (status = 401, body = ErrorBody), (status = 422, body = ErrorBody)),
+    responses((status = 200, body = IssueList, description = "Page of matching issues"), (status = 401, body = ErrorBody, description = "Missing or invalid bearer token"), (status = 422, body = ErrorBody, description = "Invalid status, limit, or offset")),
     security(("bearer_token" = [])))]
 async fn list_issues(
     State(state): State<AppState>,
@@ -330,7 +331,7 @@ async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status":"ok"}))
 }
 
-#[utoipa::path(get,path="/readyz",responses((status=200,description="Database is accessible"),(status=503,body=ErrorBody)))]
+#[utoipa::path(get,path="/readyz",responses((status=200,description="Database is accessible"),(status=503,body=ErrorBody,description="Database is unavailable")))]
 async fn readiness(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
     state
         .store
@@ -343,7 +344,7 @@ async fn readiness(State(state): State<AppState>) -> Result<Json<serde_json::Val
         .await?;
     Ok(Json(serde_json::json!({"status":"ready"})))
 }
-#[utoipa::path(get,path="/metrics",responses((status=200,body=String,content_type="text/plain"),(status=401,body=ErrorBody)),security(("bearer_token"=[])))]
+#[utoipa::path(get,path="/metrics",responses((status=200,body=String,description="Prometheus text-format metrics",content_type="text/plain"),(status=401,body=ErrorBody,description="Missing or invalid bearer token")),security(("bearer_token"=[])))]
 async fn metrics(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     Ok((
         [(
@@ -353,14 +354,14 @@ async fn metrics(State(state): State<AppState>) -> Result<impl IntoResponse, Api
         state.delivery.metrics().await?,
     ))
 }
-#[utoipa::path(get,path="/v1/deliveries/{id}",params(("id"=i64,Path)),responses((status=200,body=Delivery),(status=404,body=ErrorBody)),security(("bearer_token"=[])))]
+#[utoipa::path(get,path="/v1/deliveries/{id}",params(("id"=i64,Path)),responses((status=200,body=Delivery,description="Delivery found"),(status=404,body=ErrorBody,description="Delivery not found")),security(("bearer_token"=[])))]
 async fn get_delivery(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<Delivery>, ApiError> {
     Ok(Json(state.delivery.get(id).await?))
 }
-#[utoipa::path(post,path="/v1/heartbeats",request_body=HeartbeatInput,responses((status=200,body=Heartbeat),(status=422,body=ErrorBody)),security(("bearer_token"=[])))]
+#[utoipa::path(post,path="/v1/heartbeats",request_body=HeartbeatInput,responses((status=200,body=Heartbeat,description="Heartbeat monitor registered or updated"),(status=422,body=ErrorBody,description="Invalid heartbeat monitor")),security(("bearer_token"=[])))]
 async fn register_heartbeat(
     State(state): State<AppState>,
     body: Result<Json<HeartbeatInput>, JsonRejection>,
@@ -369,11 +370,11 @@ async fn register_heartbeat(
     request.validate().map_err(invalid)?;
     Ok(Json(state.delivery.register_heartbeat(request).await?))
 }
-#[utoipa::path(get,path="/v1/heartbeats",responses((status=200,body=Vec<Heartbeat>)),security(("bearer_token"=[])))]
+#[utoipa::path(get,path="/v1/heartbeats",responses((status=200,body=Vec<Heartbeat>,description="All heartbeat monitors")),security(("bearer_token"=[])))]
 async fn list_heartbeats(State(state): State<AppState>) -> Result<Json<Vec<Heartbeat>>, ApiError> {
     Ok(Json(state.delivery.heartbeats().await?))
 }
-#[utoipa::path(post,path="/v1/heartbeats/check-in",request_body=CloseIssue,responses((status=200,body=Heartbeat),(status=404,body=ErrorBody)),security(("bearer_token"=[])))]
+#[utoipa::path(post,path="/v1/heartbeats/check-in",request_body=CloseIssue,responses((status=200,body=Heartbeat,description="Heartbeat monitor after check-in"),(status=404,body=ErrorBody,description="Heartbeat monitor not found")),security(("bearer_token"=[])))]
 async fn check_in(
     State(state): State<AppState>,
     body: Result<Json<CloseIssue>, JsonRejection>,
@@ -382,7 +383,7 @@ async fn check_in(
     validate_id(&request.id).map_err(invalid)?;
     Ok(Json(state.delivery.check_in(request.id).await?))
 }
-#[utoipa::path(delete,path="/v1/heartbeat",params(LookupQuery),responses((status=200,description="Monitor deleted"),(status=404,body=ErrorBody)),security(("bearer_token"=[])))]
+#[utoipa::path(delete,path="/v1/heartbeat",params(LookupQuery),responses((status=200,description="Monitor deleted"),(status=404,body=ErrorBody,description="Heartbeat monitor not found")),security(("bearer_token"=[])))]
 async fn delete_heartbeat(
     State(state): State<AppState>,
     query: Result<Query<LookupQuery>, QueryRejection>,

@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Upgrade reqwest to 0.13 in the server and `flares-client`. TLS still uses rustls, now with the aws-lc-rs crypto provider and platform certificate verification. Refresh `Cargo.lock` to the latest compatible versions.
+- Upgrade utoipa to 6. Every response in `api/openapi.json` now has a description, as OpenAPI 3.1 requires.
+- Fix `api/openapi.json` declaring the `id`, `status`, `limit`, and `offset` query parameters of `/v1/issue`, `/v1/issues`, and `DELETE /v1/heartbeat` as path parameters.
 
 ## 0.1.2 - 2026-09-20
 

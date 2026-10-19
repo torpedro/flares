@@ -27,7 +27,7 @@
         "operationId": "metrics",
         "responses": {
           "200": {
-            "description": "",
+            "description": "Prometheus text-format metrics",
             "content": {
               "text/plain": {
                 "schema": {
@@ -37,7 +37,7 @@
             }
           },
           "401": {
-            "description": "",
+            "description": "Missing or invalid bearer token",
             "content": {
               "application/json": {
                 "schema": {
@@ -63,7 +63,7 @@
             "description": "Database is accessible"
           },
           "503": {
-            "description": "",
+            "description": "Database is unavailable",
             "content": {
               "application/json": {
                 "schema": {
@@ -106,7 +106,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "Alert processed; see notification for the delivery outcome",
             "content": {
               "application/json": {
                 "schema": {
@@ -116,7 +116,7 @@
             }
           },
           "401": {
-            "description": "",
+            "description": "Missing or invalid bearer token",
             "content": {
               "application/json": {
                 "schema": {
@@ -126,7 +126,7 @@
             }
           },
           "409": {
-            "description": "",
+            "description": "Idempotency key already used for a different alert",
             "content": {
               "application/json": {
                 "schema": {
@@ -136,7 +136,7 @@
             }
           },
           "422": {
-            "description": "",
+            "description": "Invalid alert body or Idempotency-Key header",
             "content": {
               "application/json": {
                 "schema": {
@@ -170,7 +170,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "Delivery found",
             "content": {
               "application/json": {
                 "schema": {
@@ -180,7 +180,7 @@
             }
           },
           "404": {
-            "description": "",
+            "description": "Delivery not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -204,7 +204,7 @@
         "parameters": [
           {
             "name": "id",
-            "in": "path",
+            "in": "query",
             "required": true,
             "schema": {
               "type": "string"
@@ -216,7 +216,7 @@
             "description": "Monitor deleted"
           },
           "404": {
-            "description": "",
+            "description": "Heartbeat monitor not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -239,7 +239,7 @@
         "operationId": "list_heartbeats",
         "responses": {
           "200": {
-            "description": "",
+            "description": "All heartbeat monitors",
             "content": {
               "application/json": {
                 "schema": {
@@ -273,7 +273,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "Heartbeat monitor registered or updated",
             "content": {
               "application/json": {
                 "schema": {
@@ -283,7 +283,7 @@
             }
           },
           "422": {
-            "description": "",
+            "description": "Invalid heartbeat monitor",
             "content": {
               "application/json": {
                 "schema": {
@@ -316,7 +316,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "Heartbeat monitor after check-in",
             "content": {
               "application/json": {
                 "schema": {
@@ -326,7 +326,7 @@
             }
           },
           "404": {
-            "description": "",
+            "description": "Heartbeat monitor not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -350,7 +350,7 @@
         "parameters": [
           {
             "name": "id",
-            "in": "path",
+            "in": "query",
             "required": true,
             "schema": {
               "type": "string"
@@ -359,7 +359,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "Issue found",
             "content": {
               "application/json": {
                 "schema": {
@@ -369,7 +369,7 @@
             }
           },
           "401": {
-            "description": "",
+            "description": "Missing or invalid bearer token",
             "content": {
               "application/json": {
                 "schema": {
@@ -379,7 +379,7 @@
             }
           },
           "404": {
-            "description": "",
+            "description": "Issue not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -403,23 +403,16 @@
         "parameters": [
           {
             "name": "status",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "oneOf": [
-                {
-                  "type": "null"
-                },
-                {
-                  "$ref": "#/components/schemas/IssueStatus"
-                }
-              ]
+              "$ref": "#/components/schemas/IssueStatus"
             }
           },
           {
             "name": "limit",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
               "type": "integer",
               "format": "int32",
@@ -430,8 +423,8 @@
           },
           {
             "name": "offset",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
               "type": "integer",
               "format": "int32",
@@ -441,7 +434,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "Page of matching issues",
             "content": {
               "application/json": {
                 "schema": {
@@ -451,7 +444,7 @@
             }
           },
           "401": {
-            "description": "",
+            "description": "Missing or invalid bearer token",
             "content": {
               "application/json": {
                 "schema": {
@@ -461,7 +454,7 @@
             }
           },
           "422": {
-            "description": "",
+            "description": "Invalid status, limit, or offset",
             "content": {
               "application/json": {
                 "schema": {
@@ -494,7 +487,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "Issue state after closing",
             "content": {
               "application/json": {
                 "schema": {
@@ -504,7 +497,7 @@
             }
           },
           "401": {
-            "description": "",
+            "description": "Missing or invalid bearer token",
             "content": {
               "application/json": {
                 "schema": {
@@ -514,7 +507,7 @@
             }
           },
           "404": {
-            "description": "",
+            "description": "Issue not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -524,7 +517,7 @@
             }
           },
           "422": {
-            "description": "",
+            "description": "Invalid issue ID",
             "content": {
               "application/json": {
                 "schema": {
@@ -557,7 +550,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "Issue state after opening",
             "content": {
               "application/json": {
                 "schema": {
@@ -567,7 +560,7 @@
             }
           },
           "401": {
-            "description": "",
+            "description": "Missing or invalid bearer token",
             "content": {
               "application/json": {
                 "schema": {
@@ -577,7 +570,7 @@
             }
           },
           "422": {
-            "description": "",
+            "description": "Invalid issue body",
             "content": {
               "application/json": {
                 "schema": {
@@ -611,7 +604,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "Issue found",
             "content": {
               "application/json": {
                 "schema": {
@@ -621,7 +614,7 @@
             }
           },
           "401": {
-            "description": "",
+            "description": "Missing or invalid bearer token",
             "content": {
               "application/json": {
                 "schema": {
@@ -631,7 +624,7 @@
             }
           },
           "404": {
-            "description": "",
+            "description": "Issue not found",
             "content": {
               "application/json": {
                 "schema": {

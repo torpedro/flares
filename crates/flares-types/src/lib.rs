@@ -202,6 +202,7 @@ pub struct IssueList {
 
 #[derive(Debug, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 #[serde(deny_unknown_fields)]
 pub struct ListQuery {
     pub status: Option<IssueStatus>,
