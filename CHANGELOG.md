@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Upgrade reqwest to 0.13 in the server and `flares-client`. TLS still uses rustls, now with the aws-lc-rs crypto provider and platform certificate verification. Refresh `Cargo.lock` to the latest compatible versions.
+
 ## 0.1.2 - 2026-09-20
 
 - Add explicit YAML loading and default discovery to Rust and Python clients, using the same client format, secret references, and config-relative paths as the CLI.
