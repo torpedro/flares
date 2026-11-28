@@ -21,8 +21,18 @@ First publication claims each available package name.
 Create a crates.io API token with permission to publish all three crates, then run
 `cargo login` and paste the token at its prompt. Create a PyPI API token separately.
 For a new project the initial PyPI token needs permission to create it; once the
-project exists, use a project-scoped token. Keep both tokens out of the repository,
-out of command arguments, and out of shell history.
+project exists, use a project-scoped token. Keep both tokens out of git history, out
+of command arguments, and out of shell history.
+
+Optionally, save the PyPI token as the first line of `pypi_token` at the repository
+root. Git ignores that file, and `make_release.sh` reads the token from it instead of
+prompting. The script refuses to upload if the file is tracked. Restrict it to your
+user:
+
+```bash
+read -r -s -p 'PyPI token: ' token && printf '%s\n' "$token" > pypi_token; unset token
+chmod 600 pypi_token
+```
 
 ## 1. Choose the version
 
@@ -126,8 +136,9 @@ out waiting for the index, check crates.io before retrying: the upload may alrea
 have succeeded. Published versions cannot be overwritten.
 
 Then publish the Python distributions. `make_release.sh` offers this directly after
-the crates, reading the token the same way. To do it by hand, read the token without
-displaying it or putting it in shell history:
+the crates, reading the token from `pypi_token` if present and otherwise prompting
+the same way. To do it by hand, read the token without displaying it or putting it in
+shell history:
 
 ```bash
 read -r -s -p 'PyPI token: ' UV_PUBLISH_TOKEN

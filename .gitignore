@@ -27,6 +27,7 @@ target
 *.sqlite3-wal
 /server.yaml
 /client.yaml
+/pypi_token
 
 # Python and release artifacts
 __pycache__/

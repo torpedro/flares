@@ -11,6 +11,9 @@ set -euo pipefail
 APP_NAME="flares"
 PUBLISH_WARNING="This uploads three crates to crates.io. Published versions are permanent:
 they cannot be replaced or deleted, only yanked."
+# Optional, untracked (see .gitignore): if present, its first line is the PyPI token
+# and the script does not prompt for one.
+PYPI_TOKEN_FILE="pypi_token"
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -164,8 +167,18 @@ else
         printf '\nPython distributions to upload:\n  %s\n  %s\n' "${wheels[0]}" "${sdists[0]}"
         printf 'PyPI releases are permanent too: a filename cannot be reused once uploaded.\n'
         if confirm 'Publish these to PyPI?'; then
-            read -r -s -p 'PyPI token: ' UV_PUBLISH_TOKEN
-            printf '\n'
+            if [ -f "$PYPI_TOKEN_FILE" ]; then
+                # Never upload with a token that is in, or about to enter, the repo.
+                if git ls-files --error-unmatch -- "$PYPI_TOKEN_FILE" >/dev/null 2>&1; then
+                    die "$PYPI_TOKEN_FILE is tracked by git; remove it with git rm --cached and revoke the token"
+                fi
+                UV_PUBLISH_TOKEN=$(head -n 1 -- "$PYPI_TOKEN_FILE" | tr -d '[:space:]')
+                [ -n "$UV_PUBLISH_TOKEN" ] || die "$PYPI_TOKEN_FILE is empty"
+                printf 'Using the PyPI token from %s.\n' "$PYPI_TOKEN_FILE"
+            else
+                read -r -s -p 'PyPI token: ' UV_PUBLISH_TOKEN
+                printf '\n'
+            fi
             export UV_PUBLISH_TOKEN
             # Clear the token even when the upload fails.
             upload_status=0
